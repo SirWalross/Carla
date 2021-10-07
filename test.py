@@ -1,8 +1,20 @@
 import carla
 import random
+import pygame, sys, os
+import numpy as np
+from pygame.locals import *
+from carla import ColorConverter as cc
+pygame.init()
+screen = pygame.display.set_mode((1280, 720))
 
-def do_something(data):
-    print(data)
+def do_something(image):
+    image.convert(cc.Raw)
+    array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
+    array = np.reshape(array, (image.height, image.width, 4))
+    array = array[:, :, :3]
+    array = array[:, :, ::-1]
+    surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
+    screen.blit(surface, (0, 0))
 
 try:
     client = carla.Client('172.23.48.1', 2000)
@@ -24,14 +36,16 @@ try:
     camera_bp.set_attribute('image_size_y', '720')
     camera_bp.set_attribute('fov', '110')
     # Set the time in seconds between sensor captures
-    camera_bp.set_attribute('sensor_tick', '10.0')
+    camera_bp.set_attribute('sensor_tick', '0.1')
 
-    relative_transform = carla.Transform(carla.Location(x=0, y=0, z=0), carla.Rotation(yaw=0))
+    relative_transform = carla.Transform(carla.Location(x=1, y=-0.5, z=1.7), carla.Rotation(yaw=0))
     camera = world.spawn_actor(camera_bp, relative_transform, vehicle)
     camera.listen(lambda data: do_something(data))
     while 1:
-        pass
+        pygame.display.flip()
+        pygame.display.update()
 except KeyboardInterrupt as e:
     vehicle.destroy()
+    pygame.quit()
     print("\nFinished")
     raise e
