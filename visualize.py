@@ -26,14 +26,21 @@ def main(ip: str):
         world = client.load_world('Town02')
         map = world.get_map()
         blueprint_library = world.get_blueprint_library()
-        spawn_points = world.get_map().get_spawn_points()
-        spawn_point = random.choice(spawn_points)
-        spawn_point.z = 10
-        spawn_point.location = world.get_random_location_from_navigation()
-        vehicle_bp = blueprint_library.find('vehicle.mercedes.sprinter')
-        print(vehicle_bp)
-        print(spawn_point)
-        vehicle = world.spawn_actor(vehicle_bp, spawn_point)
+
+        while True:
+            try:
+                spawn_points = world.get_map().get_spawn_points()
+                spawn_point = random.choice(spawn_points)
+                spawn_point.z = 10
+                spawn_point.location = world.get_random_location_from_navigation()
+                vehicle_bp = blueprint_library.find('vehicle.mercedes.sprinter')
+                print(vehicle_bp)
+                print(spawn_point)
+                vehicle = world.spawn_actor(vehicle_bp, spawn_point)
+                break
+            except RuntimeError:
+                pass
+        
         camera_bp = blueprint_library.find('sensor.camera.rgb')
 
         # Modify the attributes of the blueprint to set image resolution and field of view.
@@ -46,14 +53,12 @@ def main(ip: str):
         relative_transform = carla.Transform(carla.Location(x=1, y=-0.5, z=1.7), carla.Rotation(yaw=0))
         camera = world.spawn_actor(camera_bp, relative_transform, vehicle)
         camera.listen(lambda data: do_something(data))
-        
-        waypoint = map.get_waypoint(vehicle.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
         while 1:
+            control = carla.VehicleControl(throttle=0.75, steer=-0.5, brake=0.0, hand_brake=False, reverse=False, manual_gear_shift=False)
+            vehicle.apply_control(control)
             pygame.display.flip()
             pygame.display.update()
-            vehicle.set_location(waypoint.transform.location)
-            waypoint = waypoint.next(0.1)[0]
-            time.sleep(0.1)
+            time.sleep(0.02)
     except KeyboardInterrupt as e:
         vehicle.destroy()
         pygame.quit()
