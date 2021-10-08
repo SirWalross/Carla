@@ -4,6 +4,9 @@ import pygame, sys, os
 import numpy as np
 from pygame.locals import *
 from carla import ColorConverter as cc
+import time
+import argparse
+
 pygame.init()
 screen = pygame.display.set_mode((1280, 720))
 
@@ -21,6 +24,7 @@ def main(ip: str):
         client = carla.Client(ip, 2000)
         client.set_timeout(10.0)
         world = client.load_world('Town02')
+        map = world.get_map()
         blueprint_library = world.get_blueprint_library()
         spawn_points = world.get_map().get_spawn_points()
         spawn_point = random.choice(spawn_points)
@@ -42,9 +46,14 @@ def main(ip: str):
         relative_transform = carla.Transform(carla.Location(x=1, y=-0.5, z=1.7), carla.Rotation(yaw=0))
         camera = world.spawn_actor(camera_bp, relative_transform, vehicle)
         camera.listen(lambda data: do_something(data))
+        
+        waypoint = map.get_waypoint(vehicle.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
         while 1:
             pygame.display.flip()
             pygame.display.update()
+            vehicle.set_location(waypoint.transform.location)
+            waypoint = waypoint.next(0.1)[0]
+            time.sleep(0.1)
     except KeyboardInterrupt as e:
         vehicle.destroy()
         pygame.quit()
