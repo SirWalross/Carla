@@ -1,22 +1,64 @@
-import carla
 import random
-import pygame, sys, os
-import numpy as np
-from pygame.locals import *
-from carla import ColorConverter as cc
-import time
 import argparse
+import time
+import numpy as np
+import pygame
+from pygame.locals import *
+import cv2
+
+import carla
+from carla import ColorConverter as cc
 
 pygame.init()
 screen = pygame.display.set_mode((1280, 720))
 
-def do_something(image):
-    image.convert(cc.Raw)
+def closest(values, Number):
+    aux = []
+    for value in values:
+        aux.append(abs(Number-value))
+
+    return aux.index(sorted(aux)[0]), aux.index(sorted(aux)[1])
+
+def display_image(image):
+    image.convert(cc.CityScapesPalette)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
     array = np.reshape(array, (image.height, image.width, 4))
     array = array[:, :, :3]
     array = array[:, :, ::-1]
-    surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
+ 
+    # preparing the mask to overlay
+    # mask_road_line = cv2.inRange(array, np.array([156, 233, 49]), np.array([158, 235, 51]))
+    mask_side_walk = cv2.inRange(array, np.array([243, 34, 231]), np.array([245, 36, 233]))
+     
+    # array = cv2.bitwise_or(cv2.bitwise_and(array, array, mask = mask_road_line), cv2.bitwise_and(array, array, mask = mask_side_walk))
+    array = cv2.bitwise_and(array, array, mask = mask_side_walk)
+    edges = cv2.Canny(array,100,200)
+
+    # Line detection
+    rho = 1  # distance resolution in pixels of the Hough grid
+    theta = np.pi / 180  # angular resolution in radians of the Hough grid
+    threshold = 15  # minimum number of votes (intersections in Hough grid cell)
+    min_line_length = 100  # minimum number of pixels making up a line
+    max_line_gap = 20  # maximum gap in pixels between connectable line segments
+
+    # Run Hough on edge detected image
+    # Output "lines" is an array containing endpoints of detected line segments
+    line_image = np.copy(edges) * 0  # creating a blank to draw lines on
+    lines = cv2.HoughLinesP(edges, rho, theta, threshold, np.array([]),
+                        min_line_length, max_line_gap)
+    x_midpoints = [x1 + (x2 - x1)*0.5 for x1, _, x2, _ in [line[0] for line in lines]]
+    indices = closest(x_midpoints, image.width/2)
+    
+    for index, line in enumerate(lines):
+        for x1,y1,x2,y2 in line:
+            if index in indices:
+                cv2.line(line_image,(x1,y1),(x2,y2),(255,0,0),5)
+            else:
+                cv2.line(line_image,(x1,y1),(x2,y2),(255,0,0),1)
+    # print(x_midpoints)
+    # print(indices)
+
+    surface = pygame.surfarray.make_surface(line_image.swapaxes(0, 1))
     screen.blit(surface, (0, 0))
 
 def main(ip: str):
@@ -26,22 +68,13 @@ def main(ip: str):
         world = client.load_world('Town02')
         map = world.get_map()
         blueprint_library = world.get_blueprint_library()
-
-        while True:
-            try:
-                spawn_points = world.get_map().get_spawn_points()
-                spawn_point = random.choice(spawn_points)
-                spawn_point.z = 10
-                spawn_point.location = world.get_random_location_from_navigation()
-                vehicle_bp = blueprint_library.find('vehicle.mercedes.sprinter')
-                print(vehicle_bp)
-                print(spawn_point)
-                vehicle = world.spawn_actor(vehicle_bp, spawn_point)
-                break
-            except RuntimeError:
-                pass
+        spawn_point = carla.Transform(carla.Location(x=122.972397, y=234.584183, z=0.405664), carla.Rotation(pitch=0.000000, yaw=-179.999634, roll=0.000000))
+        vehicle_bp = blueprint_library.find('vehicle.tesla.model3')
+        print(vehicle_bp)
+        print(spawn_point)
+        vehicle = world.spawn_actor(vehicle_bp, spawn_point)
         
-        camera_bp = blueprint_library.find('sensor.camera.rgb')
+        camera_bp = blueprint_library.find('sensor.camera.semantic_segmentation')
 
         # Modify the attributes of the blueprint to set image resolution and field of view.
         camera_bp.set_attribute('image_size_x', '1280')
@@ -50,20 +83,19 @@ def main(ip: str):
         # Set the time in seconds between sensor captures
         camera_bp.set_attribute('sensor_tick', '0.1')
 
-        relative_transform = carla.Transform(carla.Location(x=1, y=-0.5, z=1.7), carla.Rotation(yaw=0))
+        relative_transform = carla.Transform(carla.Location(x=1.2, y=-0.5, z=1.7), carla.Rotation(yaw=0))
         camera = world.spawn_actor(camera_bp, relative_transform, vehicle)
-        camera.listen(lambda data: do_something(data))
+        camera.listen(lambda data: display_image(data))
         while 1:
             control = carla.VehicleControl(throttle=0.75, steer=-0.5, brake=0.0, hand_brake=False, reverse=False, manual_gear_shift=False)
-            vehicle.apply_control(control)
+            # vehicle.apply_control(control)
             pygame.display.flip()
             pygame.display.update()
             time.sleep(0.02)
-    except KeyboardInterrupt as e:
+    finally:
         vehicle.destroy()
         pygame.quit()
-        print("\nFinished")
-        raise e
+        print("Cleaned up")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
