@@ -1,6 +1,6 @@
-import carla
-import random
 import argparse
+import random
+import carla
 
 
 def do_something(data):
