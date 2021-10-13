@@ -1,6 +1,6 @@
-import carla
-import random
 import argparse
+import random
+import carla
 
 
 def do_something(data):
@@ -18,7 +18,7 @@ def main(ip: str):
         spawn_point = random.choice(spawn_points)
         spawn_point.z = 10
         spawn_point.location = world.get_random_location_from_navigation()
-        vehicle_bp = blueprint_library.find("vehicle.mercedes.sprinter")
+        vehicle_bp = blueprint_library.find("vehicle.tesla.model3")
         print(vehicle_bp)
         print(spawn_point)
         vehicle = world.spawn_actor(vehicle_bp, spawn_point)
@@ -38,10 +38,9 @@ def main(ip: str):
         waypoint_list = map.generate_waypoints(2.0)
         while 1:
             pass
-    except KeyboardInterrupt as e:
+    finally:
         vehicle.destroy()
-        print("\nFinished")
-        raise e
+        print("Cleaned up")
 
 
 if __name__ == "__main__":
