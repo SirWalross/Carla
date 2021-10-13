@@ -12,16 +12,25 @@ from carla import ColorConverter as cc
 pygame.init()
 screen = pygame.display.set_mode((1280, 720))
 
+frame = 0
+throttle = 0
+steering = 0
+lines = []
+
 
 def closest(values, Number):
-    aux = []
+    array = []
     for value in values:
-        aux.append(abs(Number - value))
+        array.append(abs(Number - value))
 
-    return aux.index(sorted(aux)[0]), aux.index(sorted(aux)[1])
+    return array.index(sorted(array)[0]), array.index(sorted(array)[1])
 
 
 def display_image(image):
+    global throttle
+    global steering
+    global lines
+    global frame
     image.convert(cc.CityScapesPalette)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
     array = np.reshape(array, (image.height, image.width, 4))
@@ -31,26 +40,23 @@ def display_image(image):
 
     # preparing the mask to overlay
     mask_road_line = cv2.inRange(array, np.array([156, 233, 49]), np.array([158, 235, 51]))
-    mask_side_walk = cv2.inRange(array, np.array([243, 34, 231]), np.array([245, 36, 233]))
+    mask_road = cv2.inRange(array, np.array([127, 63, 127]), np.array([129, 65, 129]))
+    mask = cv2.bitwise_or(mask_road_line, mask_road)
 
-    # array = cv2.bitwise_or(cv2.bitwise_and(array, array, mask = mask_road_line), cv2.bitwise_and(array, array, mask = mask_side_walk))
-    array = cv2.bitwise_and(array, array, mask=mask_side_walk)
+    base_colour = np.full_like(array, np.array([100, 100, 100]))
+    array = cv2.bitwise_and(base_colour, base_colour, mask=mask)
 
     # create a zero array
     stencil = np.zeros_like(array[:, :, 0])
 
     # specify coordinates of the polygon
     polygon = np.array([[-100, 720], [430, 400], [860, 400], [1430, 720]])
-    # polygon = np.array([[100,100], [1180,100], [1180,620], [100,620]])
 
     # fill polygon with ones
     cv2.fillConvexPoly(stencil, polygon, 255)
 
     # apply stencil
-    # array = cv2.bitwise_and(array, array, mask = stencil)
-    base_colour = np.full_like(array, np.array([244, 35, 232]))
-    cv2.fillConvexPoly(base_colour, polygon, (0, 0, 0))
-    array = cv2.bitwise_or(array, base_colour)
+    array = cv2.bitwise_and(array, array, mask=stencil)
 
     # edge detection
     edges = cv2.Canny(array, 100, 200)
@@ -62,27 +68,39 @@ def display_image(image):
     min_line_length = 200  # minimum number of pixels making up a line
     max_line_gap = 20  # maximum gap in pixels between connectable line segments
 
-    # Run Hough on edge detected image
-    # Output "lines" is an array containing endpoints of detected line segments
-    line_image = np.copy(edges) * 0  # creating a blank to draw lines on
-    lines = cv2.HoughLinesP(edges, rho, theta, threshold, np.array([]), min_line_length, max_line_gap)
-    x_midpoints = [x1 + (x2 - x1) * 0.5 for x1, _, x2, _ in [line[0] for line in lines]]
-    indices = closest(x_midpoints, image.width / 2)
-    lines = [line[0] for index, line in enumerate(lines) if index in indices]
+    try:
+        # Run Hough on edge detected image
+        # Output "lines" is an array containing endpoints of detected line segments
+        detected_lines = cv2.HoughLinesP(edges, rho, theta, threshold, np.array([]), min_line_length, max_line_gap)
+        x_midpoints = [x1 + (x2 - x1) * 0.5 for x1, _, x2, _ in [line[0] for line in detected_lines]]
+        indices = closest(x_midpoints, image.width / 2)
+        lines = [line[0] for index, line in enumerate(detected_lines) if index in indices]
 
-    for x1, y1, x2, y2 in lines:
-        cv2.line(raw_image, (x1, y1), (x2, y2), (255, 255, 255), 5)
+        for x1, y1, x2, y2 in lines:
+            cv2.line(raw_image, (x1, y1), (x2, y2), (255, 255, 255), 5)
+
+        if len(lines) == 2:
+            slope = []
+            for x1, y1, x2, y2 in lines:
+                slope.append((y2 - y1)/(x2 - x1))
+            steering = np.clip(slope[1] + slope[0], -2, 2) / 2
+            # throttle = np.clip(abs(slope[0]), 0.2, 1)
+            throttle = np.clip(0.2, 0.2, 1)
+    except IndexError:
+        pass
+    except TypeError:
+        pass
 
     surface = pygame.surfarray.make_surface(raw_image.swapaxes(0, 1))
     screen.blit(surface, (0, 0))
-    return lines
+    frame += 1
 
 
 def main(ip: str):
     try:
         client = carla.Client(ip, 2000)
         client.set_timeout(10.0)
-        world = client.load_world("Town02")
+        world = client.get_world()
         map = world.get_map()
         blueprint_library = world.get_blueprint_library()
         spawn_point = carla.Transform(
@@ -101,23 +119,30 @@ def main(ip: str):
         camera_bp.set_attribute("image_size_y", "720")
         camera_bp.set_attribute("fov", "110")
         # Set the time in seconds between sensor captures
-        camera_bp.set_attribute("sensor_tick", "0.1")
+        camera_bp.set_attribute("sensor_tick", "0.05")
 
         relative_transform = carla.Transform(carla.Location(x=1.2, y=-0.5, z=1.7), carla.Rotation(yaw=0))
         camera = world.spawn_actor(camera_bp, relative_transform, vehicle)
         camera.listen(display_image)
         while 1:
             control = carla.VehicleControl(
-                throttle=0.5, steer=0, brake=0.0, hand_brake=False, reverse=False, manual_gear_shift=False
+                throttle=throttle, steer=steering, brake=0.0, hand_brake=False, reverse=False, manual_gear_shift=False
             )
             vehicle.apply_control(control)
             pygame.display.flip()
             pygame.display.update()
-            time.sleep(0.02)
+            time.sleep(0.05)
+
+            if len(lines) == 2:
+                lines_output = f"[({lines[0][0]}, {lines[0][1]}), ({lines[0][2]}, {lines[0][3]})], [({lines[1][0]}, {lines[1][1]}), ({lines[1][2]}, {lines[1][3]})]"
+                print(f"frame {frame}, steering: {steering}, throttle: {throttle}, lines: {lines_output}", end="\r")
     finally:
-        vehicle.destroy()
+        try:
+            vehicle.destroy()
+        except NameError:
+            pass
         pygame.quit()
-        print("Cleaned up")
+        print("\nCleaned up")
 
 
 if __name__ == "__main__":
