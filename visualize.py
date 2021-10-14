@@ -15,7 +15,10 @@ screen = pygame.display.set_mode((1280, 720))
 frame = 0
 throttle = 0
 steering = 0
+change_amount = 0.1
 lines = []
+
+sign = lambda x: (1, -1)[x<0]
 
 
 def closest(values, Number):
@@ -82,8 +85,13 @@ def display_image(image):
         if len(lines) == 2:
             slope = []
             for x1, y1, x2, y2 in lines:
-                slope.append((y2 - y1)/(x2 - x1))
-            steering = np.clip(slope[1] + slope[0], -2, 2) / 2
+                slope.append((x2 - x1)/(y2 - y1))
+            steering_value = np.clip(slope[1] + slope[0], -2, 2) / 2
+            diff = steering - steering_value
+            if abs(diff) > change_amount:
+                steering -= sign(diff) * change_amount
+            else:
+                steering = steering_value
             # throttle = np.clip(abs(slope[0]), 0.2, 1)
             throttle = np.clip(0.2, 0.2, 1)
     except IndexError:
@@ -100,7 +108,7 @@ def main(ip: str):
     try:
         client = carla.Client(ip, 2000)
         client.set_timeout(10.0)
-        world = client.get_world()
+        world = client.load_world("Town02")
         map = world.get_map()
         blueprint_library = world.get_blueprint_library()
         spawn_point = carla.Transform(
