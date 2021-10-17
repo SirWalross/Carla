@@ -18,7 +18,7 @@ steering = 0
 change_amount = 0.1
 lines = []
 
-sign = lambda x: (1, -1)[x<0]
+sign = lambda x: (1, -1)[x < 0]
 
 
 def closest(values, Number):
@@ -49,17 +49,17 @@ def display_image(image):
     base_colour = np.full_like(array, np.array([100, 100, 100]))
     array = cv2.bitwise_and(base_colour, base_colour, mask=mask)
 
-    # create a zero array
-    stencil = np.zeros_like(array[:, :, 0])
+    # # create a zero array
+    # stencil = np.zeros_like(array[:, :, 0])
 
-    # specify coordinates of the polygon
-    polygon = np.array([[-100, 720], [430, 400], [860, 400], [1430, 720]])
+    # # specify coordinates of the polygon
+    # polygon = np.array([[-100, 720], [430, 400], [860, 400], [1430, 720]])
 
-    # fill polygon with ones
-    cv2.fillConvexPoly(stencil, polygon, 255)
+    # # fill polygon with ones
+    # cv2.fillConvexPoly(stencil, polygon, 255)
 
-    # apply stencil
-    array = cv2.bitwise_and(array, array, mask=stencil)
+    # # apply stencil
+    # array = cv2.bitwise_and(array, array, mask=stencil)
 
     # edge detection
     edges = cv2.Canny(array, 100, 200)
@@ -80,12 +80,12 @@ def display_image(image):
         lines = [line[0] for index, line in enumerate(detected_lines) if index in indices]
 
         for x1, y1, x2, y2 in lines:
-            cv2.line(raw_image, (x1, y1), (x2, y2), (255, 255, 255), 5)
+            cv2.line(array, (x1, y1), (x2, y2), (255, 255, 255), 5)
 
         if len(lines) == 2:
             slope = []
             for x1, y1, x2, y2 in lines:
-                slope.append((x2 - x1)/(y2 - y1))
+                slope.append((x2 - x1) / (y2 - y1))
             steering_value = np.clip(slope[1] + slope[0], -2, 2) / 2
             diff = steering - steering_value
             if abs(diff) > change_amount:
@@ -99,7 +99,7 @@ def display_image(image):
     except TypeError:
         pass
 
-    surface = pygame.surfarray.make_surface(raw_image.swapaxes(0, 1))
+    surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
     screen.blit(surface, (0, 0))
     frame += 1
 
@@ -107,8 +107,8 @@ def display_image(image):
 def main(ip: str):
     try:
         client = carla.Client(ip, 2000)
-        client.set_timeout(10.0)
-        world = client.load_world("Town02")
+        client.set_timeout(5.0)
+        world = client.load_world("Town01")
         map = world.get_map()
         blueprint_library = world.get_blueprint_library()
         spawn_point = carla.Transform(
@@ -142,7 +142,10 @@ def main(ip: str):
             time.sleep(0.05)
 
             if len(lines) == 2:
-                lines_output = f"[({lines[0][0]}, {lines[0][1]}), ({lines[0][2]}, {lines[0][3]})], [({lines[1][0]}, {lines[1][1]}), ({lines[1][2]}, {lines[1][3]})]"
+                lines_output = (
+                    f"[({lines[0][0]}, {lines[0][1]}), ({lines[0][2]}, {lines[0][3]})], [({lines[1][0]},"
+                    f" {lines[1][1]}), ({lines[1][2]}, {lines[1][3]})]"
+                )
                 print(f"frame {frame}, steering: {steering}, throttle: {throttle}, lines: {lines_output}", end="\r")
     finally:
         try:
