@@ -14,6 +14,10 @@ pygame.init()
 screen = pygame.display.set_mode((1280, 720))
 current_speed = 0.0 # m/s
 prev_sensor_data = None
+steering_delta = 0
+speed_delta = 0
+distance_waypoint = 0
+waypoint = None
 
 
 def display_image(image):
@@ -28,7 +32,7 @@ def display_image(image):
 
 
 def imu_sensor(sensor_data):
-    global prev_sensor_data, current_speed
+    global prev_sensor_data, current_speed, distance_waypoint
     if prev_sensor_data is not None:
         dx = sensor_data.transform.location.distance(prev_sensor_data.transform.location)
         dt = sensor_data.timestamp - prev_sensor_data.timestamp
@@ -36,20 +40,43 @@ def imu_sensor(sensor_data):
         prev_sensor_data = sensor_data
     else:
         prev_sensor_data = sensor_data
+    if waypoint is not None:
+        distance_waypoint = sensor_data.transform.location.distance(waypoint.transform.location)
 
 
-def vehicle_control(waypoint, vehicle_transform) -> Tuple[float, float, float]:
-    return 0.5, 0.0, 0.0
+def vehicle_control(waypoint_transform, vehicle_transform, target_speed) -> Tuple[float, float, float]:
+    global steering_delta, speed_delta
+
+    # calulate steering delta
+    forward_vector = vehicle_transform.get_forward_vector()
+    forward_vector = np.array([forward_vector.x, forward_vector.y, 0.0])
+    waypoint_vector = np.array([waypoint_transform.location.x - vehicle_transform.location.x, waypoint_transform.location.y - vehicle_transform.location.y, 0.0])
+    wv_linalg = np.linalg.norm(waypoint_vector) * np.linalg.norm(forward_vector)
+    if wv_linalg == 0:
+        _dot = 1
+    else:
+        _dot = math.acos(np.clip(np.dot(waypoint_vector, forward_vector) / (wv_linalg), -1.0, 1.0))
+
+    _cross = np.cross(forward_vector, waypoint_vector)
+    if _cross[2] < 0:
+        _dot *= -1.0
+    steering_delta = _dot
+    speed_delta = target_speed - current_speed
+
+    K_P_T = 0.5
+    K_P_S = 0.5
+
+    throttle = np.clip(speed_delta * K_P_T, 0, 1)
+    steering = np.clip(steering_delta * K_P_S, -1, 1)
+    return throttle, steering, 0.0
 
 
 def main(ip: str):
+    global waypoint
     try:
         client = carla.Client(ip, 2000)
         client.set_timeout(5.0)
-        world = client.load_world("Town01_Opt", carla.MapLayer.NONE)
-        world.unload_map_layer(carla.MapLayer.Buildings)
-        world.unload_map_layer(carla.MapLayer.ParkedVehicles)
-        world.unload_map_layer(carla.MapLayer.Foliage)
+        world = client.load_world("Town05")
         map = world.get_map()
         blueprint_library = world.get_blueprint_library()
         spawn_points = world.get_map().get_spawn_points()
@@ -85,18 +112,22 @@ def main(ip: str):
         waypoint = map.get_waypoint(vehicle.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
         vehicle.set_transform(waypoint.transform)
         while 1:
-            throttle, steering, brake = vehicle_control(waypoint)
+            throttle, steering, brake = vehicle_control(waypoint.transform, vehicle.get_transform(), 10)
             control = carla.VehicleControl(
                 throttle=throttle, steer=steering, brake=brake, hand_brake=False, reverse=False, manual_gear_shift=False
             )
             vehicle.apply_control(control)
+            # vehicle.set_transform(waypoint.transform)
             pygame.display.flip()
             pygame.display.update()
             time.sleep(0.02)
-            waypoint = random.choice(waypoint.next(0.5))
+            if distance_waypoint <= 5:
+                waypoint = random.choice(waypoint.next(10))
+                world.debug.draw_point(waypoint.transform.location)
             print(
                 f"Position ({waypoint.transform.location.x:.3f}, {waypoint.transform.location.y:.3f},"
-                f" {waypoint.transform.location.z:.3f}), Speed: {current_speed:.3f} m/s",
+                f" {waypoint.transform.location.z:.3f}), Speed: {current_speed:.3f} m/s, speed delta: {speed_delta:.3f}, "
+                f"steering delta: {steering_delta:.3f}, distance waypoint: {distance_waypoint}",
                 end="\033[0K\r",
             )
     finally:
