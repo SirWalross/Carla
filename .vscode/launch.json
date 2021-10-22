@@ -14,7 +14,7 @@
                 "args": [
                     "${input:get_ip}"
                 ]
-            }
+            },
         }
     ],
     "inputs": [
