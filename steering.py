@@ -6,8 +6,13 @@ from typing import Tuple
 import numpy as np
 import carla
 import cv2
+import pygame
+from pygame.locals import *
 
 from carla import ColorConverter as cc
+
+pygame.init()
+screen = pygame.display.set_mode((1280, 720))
 
 current_speed = 0.0 # m/s
 prev_sensor_data = None
@@ -43,7 +48,6 @@ def display_image(image):
     else:
         detected_red_traffic_light = False
 
-    cv2.imshow('Frame', array)
 
 def detect_traffic_light(image):
     global detected_traffic_light
@@ -72,13 +76,15 @@ def detect_traffic_light(image):
     array = cv2.bitwise_and(array, array, mask=stencil)
 
     # contour detection
-    contours, _ = cv2.findContours(array, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+    # contours, _ = cv2.findContours(array, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
 
-    if len(contours) > 0:
-        # detected traffic light
-        detected_traffic_light = contours[0]
-    else:
-        detected_traffic_light = None
+    # if len(contours) > 0:
+    #     # detected traffic light
+    #     detected_traffic_light = contours[0]
+    # else:
+    #     detected_traffic_light = None
+    surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
+    screen.blit(surface, (0, 0))
 
 
 
@@ -175,8 +181,11 @@ def main(ip: str):
             )
             vehicle.apply_control(control)
             # vehicle.set_transform(waypoint.transform)
-            if cv2.waitKey(20) & 0xFF == ord('q'):
-                break
+            # if cv2.waitKey(20) & 0xFF == ord('q'):
+            #     break
+            pygame.display.flip()
+            pygame.display.update()
+            time.sleep(0.05)
             if distance_waypoint <= 5:
                 waypoint = random.choice(waypoint.next(10))
                 world.debug.draw_point(waypoint.transform.location)
