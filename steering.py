@@ -6,6 +6,7 @@ from typing import Tuple
 import numpy as np
 import carla
 import cv2
+from numpy.lib.function_base import average
 import pygame
 from pygame.locals import *
 
@@ -32,21 +33,29 @@ def display_image(image):
 
     # convert from rgb to bgr
     array = array[:, :, ::-1]
+
+    img = np.copy(array)
     
     if detected_traffic_light is not None:
         mask = np.zeros_like(array[:, :, 0])
         cv2.drawContours(mask, detected_traffic_light, -1,255,3)
 
-        img = cv2.bitwise_and(array, array, mask=mask)
+        image = cv2.bitwise_and(array, array, mask=mask)
 
         # average red color in image
-        average_red = np.average(img[:, :, 2])
-        if average_red > 10:
+        average_red = np.average(image[:, :, 2])
+        print(f"average red in image: {average_red}")
+        if average_red > 0.1:
             detected_red_traffic_light = True
+            cv2.drawContours(img, [detected_traffic_light], 0, (0,0,255), 1)
         else:
             detected_red_traffic_light = False
+            cv2.drawContours(img, [detected_traffic_light], 0, (255,255,255), 1)
     else:
         detected_red_traffic_light = False
+
+    # surface = pygame.surfarray.make_surface(img.swapaxes(0, 1))
+    # screen.blit(surface, (0, 0))
 
 
 def detect_traffic_light(image):
@@ -63,28 +72,35 @@ def detect_traffic_light(image):
     base_colour = np.full_like(array, np.array([100, 100, 100]))
     array = cv2.bitwise_and(base_colour, base_colour, mask=mask)
 
-    # create a zero array
-    stencil = np.zeros_like(array[:, :, 0])
+    # # create a zero array
+    # stencil = np.zeros_like(array[:, :, 0])
 
-    # specify coordinates of the polygon
-    polygon = np.array([[-100, 0], [430, 320], [860, 320], [1430, 0]])
+    # # specify coordinates of the polygon
+    # polygon = np.array([[-100, 0], [430, 500], [860, 500], [1430, 0]])
 
-    # fill polygon with ones
-    cv2.fillConvexPoly(stencil, polygon, 255)
+    # # fill polygon with ones
+    # cv2.fillConvexPoly(stencil, polygon, 255)
 
-    # apply stencil
-    array = cv2.bitwise_and(array, array, mask=stencil)
+    # # apply stencil
+    # array = cv2.bitwise_and(array, array, mask=stencil)
+
+    # convert image to greyscale
+    array = cv2.cvtColor(array, cv2.COLOR_BGR2GRAY)
 
     # contour detection
-    # contours, _ = cv2.findContours(array, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+    contours, _ = cv2.findContours(array, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
 
-    # if len(contours) > 0:
-    #     # detected traffic light
-    #     detected_traffic_light = contours[0]
-    # else:
-    #     detected_traffic_light = None
-    surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
-    screen.blit(surface, (0, 0))
+
+    if len(contours) > 0:
+        # detected traffic light
+    
+        # get area of largest contour
+        contour = max(contours, key = cv2.boundingRect)
+        # _,_,w,h = cv2.boundingRect(contour)
+        # print(f"Area: {w * h}")
+        detected_traffic_light = contours[0]
+    else:
+        detected_traffic_light = None
 
 
 
@@ -102,6 +118,7 @@ def gnss_sensor(sensor_data):
 
 
 def vehicle_control(waypoint_transform, vehicle_transform, target_speed) -> Tuple[float, float, float]:
+    return 0.2, 0, 0
     global steering_delta, speed_delta
 
     # calulate steering delta
@@ -132,11 +149,18 @@ def main(ip: str):
     global waypoint
     try:
         client = carla.Client(ip, 2000)
-        client.set_timeout(5.0)
-        world = client.load_world("Town01")
+        client.set_timeout(10.0)
+        world = client.load_world("Town02_Opt", carla.MapLayer.NONE)
+        world.unload_map_layer(carla.MapLayer.Buildings)
+        world.unload_map_layer(carla.MapLayer.Decals)
+        world.unload_map_layer(carla.MapLayer.ParkedVehicles)
+        world.unload_map_layer(carla.MapLayer.Foliage)
+        world.unload_map_layer(carla.MapLayer.Walls)
+        world.unload_map_layer(carla.MapLayer.Props)
         map = world.get_map()
         blueprint_library = world.get_blueprint_library()
         spawn_points = world.get_map().get_spawn_points()
+        vehicle = None
         while True:
             try:
                 spawn_point = random.choice(spawn_points)
@@ -147,13 +171,13 @@ def main(ip: str):
                 break
             except RuntimeError:
                 continue
-        
+        print("Spawned vehicle")
         # RGB camera
         rgb_camera_bp = blueprint_library.find("sensor.camera.rgb")
         rgb_camera_bp.set_attribute("image_size_x", "1280")
         rgb_camera_bp.set_attribute("image_size_y", "720")
-        rgb_camera_bp.set_attribute("fov", "110")
-        rgb_camera_bp.set_attribute("sensor_tick", "0.02")
+        rgb_camera_bp.set_attribute("fov", "90")
+        rgb_camera_bp.set_attribute("sensor_tick", "0.1")
         relative_transform = carla.Transform(carla.Location(x=1.2, y=-0.5, z=1.7), carla.Rotation(yaw=0))
         rgb_camera = world.spawn_actor(rgb_camera_bp, relative_transform, vehicle)
         rgb_camera.listen(display_image)
@@ -162,8 +186,8 @@ def main(ip: str):
         segmentation_bp = blueprint_library.find("sensor.camera.semantic_segmentation")
         segmentation_bp.set_attribute("image_size_x", "1280")
         segmentation_bp.set_attribute("image_size_y", "720")
-        segmentation_bp.set_attribute("fov", "110")
-        segmentation_bp.set_attribute("sensor_tick", "1")
+        segmentation_bp.set_attribute("fov", "90")
+        segmentation_bp.set_attribute("sensor_tick", "0.1")
         segmentation = world.spawn_actor(segmentation_bp, relative_transform, vehicle)
         segmentation.listen(detect_traffic_light)
 
@@ -185,16 +209,16 @@ def main(ip: str):
             #     break
             pygame.display.flip()
             pygame.display.update()
-            time.sleep(0.05)
-            if distance_waypoint <= 5:
-                waypoint = random.choice(waypoint.next(10))
-                world.debug.draw_point(waypoint.transform.location)
-            print(
-                f"Position ({waypoint.transform.location.x:.3f}, {waypoint.transform.location.y:.3f},"
-                f" {waypoint.transform.location.z:.3f}), Speed: {current_speed:.3f} m/s, speed delta: {speed_delta:.3f}, "
-                f"steering delta: {steering_delta:.3f}, distance waypoint: {distance_waypoint}",
-                end="\033[0K\r",
-            )
+            time.sleep(0.1)
+            # if distance_waypoint <= 5:
+            #     waypoint = random.choice(waypoint.next(10))
+            #     world.debug.draw_point(waypoint.transform.location)
+            # print(
+            #     f"Position ({waypoint.transform.location.x:.3f}, {waypoint.transform.location.y:.3f},"
+            #     f" {waypoint.transform.location.z:.3f}), Speed: {current_speed:.3f} m/s, speed delta: {speed_delta:.3f}, "
+            #     f"steering delta: {steering_delta:.3f}, distance waypoint: {distance_waypoint}",
+            #     end="\033[0K\r",
+            # )
     finally:
         try:
             vehicle.destroy()
