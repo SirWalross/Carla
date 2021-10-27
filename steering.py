@@ -21,7 +21,8 @@ steering_delta = 0
 speed_delta = 0
 distance_waypoint = 0
 waypoint = None
-detected_traffic_light = None
+traffic_light = None
+traffic_sign = None
 detected_red_traffic_light = False
 waypoint_deadzone = 0
 
@@ -39,57 +40,94 @@ def rgb_sensor(image):
     array = np.array(array[:, :, ::-1])
     last_image = np.copy(array)
 
-    if detected_traffic_light is not None:
-        area = cv2.contourArea(detected_traffic_light)
+    if traffic_light is not None:
+        area = cv2.contourArea(traffic_light)
 
         mask = np.zeros_like(array[:, :, 0])
-        cv2.drawContours(mask, [detected_traffic_light], -1, (255, 255, 255), -1)
+        cv2.drawContours(mask, [traffic_light], -1, (255, 255, 255), -1)
         image = cv2.bitwise_and(array, array, mask=mask)
 
         # average red color in image
         average_colours = np.array([np.average(image[:, :, 0]), np.average(image[:, :, 1]), np.average(image[:, :, 2])])
         average_colours = average_colours / np.sum(average_colours)
 
-        if average_colours[0] > 0.36:
-            cv2.drawContours(array, [detected_traffic_light], -1, (255, 0, 0), 1)
+        point = (max(traffic_light[:, 0, 0]), min(traffic_light[:, 0, 1]))
+        if average_colours[0] > 0.37:
+            cv2.drawContours(array, [traffic_light], -1, (255, 0, 0), 1)
+            cv2.putText(array, f"{average_colours[0]:.2f},{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 1)
         else:
-            cv2.drawContours(array, [detected_traffic_light], -1, (0, 255, 0), 1)
+            cv2.drawContours(array, [traffic_light], -1, (0, 255, 0), 1)
+            cv2.putText(array, f"{average_colours[0]:.2f},{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 1)
 
-        if area > 1800 and average_colours[0] > 0.36:
+        if area > 1800 and average_colours[0] > 0.37:
             detected_red_traffic_light = True
         else:
             detected_red_traffic_light = False
     else:
         detected_red_traffic_light = False
 
+    if traffic_sign is not None:
+        area = cv2.contourArea(traffic_sign)
+
+        mask = np.zeros_like(array[:, :, 0])
+        cv2.drawContours(mask, [traffic_sign], -1, (255, 255, 255), -1)
+        image = cv2.bitwise_and(array, array, mask=mask)
+
+        # TODO: use image to read traffic sign
+
+        point = (max(traffic_sign[:, 0, 0]), min(traffic_sign[:, 0, 1]))
+        cv2.drawContours(array, [traffic_sign], -1, (255, 0, 0), 1)
+        cv2.putText(array, f"30,{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 1)
+
     surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
     screen.blit(surface, (0, 0))
 
 
 def segmentation_sensor(image):
-    global detected_traffic_light
+    global traffic_light, traffic_sign
     image.convert(cc.CityScapesPalette)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
     array = np.reshape(array, (image.height, image.width, 4))
     array = array[:, :, :3]
     array = array[:, :, ::-1]
 
+    # Traffic light
+    traffic_image = np.copy(array)
     # preparing the mask to overlay
-    mask = cv2.inRange(array, np.array([249, 169, 29]), np.array([251, 171, 31]))
+    mask = cv2.inRange(traffic_image, np.array([249, 169, 29]), np.array([251, 171, 31]))
 
-    base_colour = np.full_like(array, np.array([255, 255, 255]))
-    array = cv2.bitwise_and(base_colour, base_colour, mask=mask)
+    base_colour = np.full_like(traffic_image, np.array([255, 255, 255]))
+    traffic_image = cv2.bitwise_and(base_colour, base_colour, mask=mask)
 
     # convert image to greyscale
-    array = cv2.cvtColor(array, cv2.COLOR_BGR2GRAY)
+    traffic_image = cv2.cvtColor(traffic_image, cv2.COLOR_BGR2GRAY)
 
     # contour detection
-    contours, _ = cv2.findContours(array, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+    contours, _ = cv2.findContours(traffic_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
 
     if len(contours) > 0:
-        detected_traffic_light = max(contours, key=cv2.contourArea)
+        traffic_light = max(contours, key=cv2.contourArea)
     else:
-        detected_traffic_light = None
+        traffic_light = None
+
+    # Traffic sign
+    traffic_image = np.copy(array)
+    # preparing the mask to overlay
+    mask = cv2.inRange(traffic_image, np.array([219, 219, 0]), np.array([221, 221, 1]))
+
+    base_colour = np.full_like(traffic_image, np.array([255, 255, 255]))
+    traffic_image = cv2.bitwise_and(base_colour, base_colour, mask=mask)
+
+    # convert image to greyscale
+    traffic_image = cv2.cvtColor(traffic_image, cv2.COLOR_BGR2GRAY)
+
+    # contour detection
+    contours, _ = cv2.findContours(traffic_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+
+    if len(contours) > 0:
+        traffic_sign = max(contours, key=cv2.contourArea)
+    else:
+        traffic_sign = None
 
 
 def gnss_sensor(sensor_data):
@@ -206,8 +244,8 @@ def main(ip: str):
                 if event.type == pygame.QUIT:
                     quit()
 
-            if distance_waypoint <= 2 and waypoint_deadzone <= 0:
-                waypoint = random.choice(waypoint.next(3))
+            if distance_waypoint <= 1 and waypoint_deadzone <= 0:
+                waypoint = random.choice(waypoint.next(2))
                 world.debug.draw_point(waypoint.transform.location)
                 waypoint_deadzone = 2
             elif waypoint_deadzone != 0:
@@ -215,7 +253,7 @@ def main(ip: str):
             print(
                 f"throttle: {throttle:.3f}, steering: {steering:.3f}, brake: {brake:.3f}, speed:"
                 f" {current_speed:.3f} m/s, speed delta: {speed_delta:.3f}, steering delta: {steering_delta:.3f},"
-                f" distance waypoint: {distance_waypoint}",
+                f" distance waypoint: {distance_waypoint:.3f}",
                 end="\033[0K\r",
             )
     finally:
