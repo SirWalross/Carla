@@ -25,8 +25,34 @@ traffic_light = None
 traffic_sign = None
 detected_red_traffic_light = False
 waypoint_deadzone = 0
+lidar = None
 
 last_image = None
+
+def lidar_sensor(lidar_data): 
+    p_cloud_size = len(lidar_data)
+    p_cloud = np.copy(np.frombuffer(lidar_data.raw_data, dtype=np.dtype('f4')))
+    p_cloud = np.reshape(p_cloud, (p_cloud_size, 4))
+
+    # Lidar intensity array of shape (p_cloud_size,) but, for now, let's
+    # focus on the 3D points.
+    intensity = np.array(p_cloud[:, 3])
+
+    # Point cloud in lidar sensor space array of shape (3, p_cloud_size).
+    local_lidar_points = np.array(p_cloud[:, :3]).T
+
+    # Add an extra 1.0 at the end of each 3d point so it becomes of
+    # shape (4, p_cloud_size) and it can be multiplied by a (4, 4) matrix.
+    local_lidar_points = np.r_[
+        local_lidar_points, [np.ones(local_lidar_points.shape[1])]]
+    
+    print(local_lidar_points.T[0])
+
+    # This (4, 4) matrix transforms the points from lidar space to world space.
+    lidar_2_world = lidar.get_transform().get_matrix()
+
+    # Transform the points from lidar space to world space.
+    world_points = np.dot(lidar_2_world, local_lidar_points)
 
 
 def rgb_sensor(image):
@@ -179,7 +205,7 @@ def vehicle_control(waypoint_transform, vehicle_transform, target_speed) -> Tupl
 
 
 def main(ip: str):
-    global waypoint, waypoint_deadzone
+    global waypoint, waypoint_deadzone, lidar
     try:
         client = carla.Client(ip, 2000)
         client.set_timeout(10.0)
@@ -223,6 +249,19 @@ def main(ip: str):
         segmentation_bp.set_attribute("sensor_tick", "0.02")
         segmentation = world.spawn_actor(segmentation_bp, relative_transform, vehicle)
         segmentation.listen(segmentation_sensor)
+
+        # Lidar sensor
+        lidar_bp = blueprint_library.find("sensor.lidar.ray_cast")
+        lidar_bp.set_attribute('dropoff_general_rate', '0.0')
+        lidar_bp.set_attribute('dropoff_intensity_limit', '1.0')
+        lidar_bp.set_attribute('dropoff_zero_intensity', '0.0')
+        lidar_bp.set_attribute('upper_fov', '30.0')
+        lidar_bp.set_attribute('lower_fov', '-25.0')
+        lidar_bp.set_attribute('channels', '64.0')
+        lidar_bp.set_attribute('range', '100.0')
+        lidar_bp.set_attribute('points_per_second', '100000.0')
+        lidar = world.spawn_actor(lidar_bp, relative_transform, vehicle)
+        lidar.listen(lidar_sensor)
 
         # GNSS sensor
         gnss = blueprint_library.find("sensor.other.gnss")
