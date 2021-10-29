@@ -2,7 +2,7 @@ import argparse
 import math
 import random
 import time
-from typing import Tuple
+from typing import List, Tuple
 import numpy as np
 import carla
 import cv2
@@ -11,6 +11,8 @@ import pygame
 from pygame.locals import *
 
 from carla import ColorConverter as cc
+
+from sensorclasses import LidarData
 
 pygame.init()
 screen = pygame.display.set_mode((1280, 720))
@@ -25,38 +27,27 @@ traffic_light = None
 traffic_sign = None
 detected_red_traffic_light = False
 waypoint_deadzone = 0
-lidar = None
 
-last_image = None
+obstacles: List[Tuple[float, float]] = []
+last_lidar_data: LidarData = None
 
-def lidar_sensor(lidar_data): 
-    p_cloud_size = len(lidar_data)
-    p_cloud = np.copy(np.frombuffer(lidar_data.raw_data, dtype=np.dtype('f4')))
-    p_cloud = np.reshape(p_cloud, (p_cloud_size, 4))
 
-    # Lidar intensity array of shape (p_cloud_size,) but, for now, let's
-    # focus on the 3D points.
-    intensity = np.array(p_cloud[:, 3])
-
-    # Point cloud in lidar sensor space array of shape (3, p_cloud_size).
-    local_lidar_points = np.array(p_cloud[:, :3]).T
-
-    # Add an extra 1.0 at the end of each 3d point so it becomes of
-    # shape (4, p_cloud_size) and it can be multiplied by a (4, 4) matrix.
-    local_lidar_points = np.r_[
-        local_lidar_points, [np.ones(local_lidar_points.shape[1])]]
-    
-    print(local_lidar_points.T[0])
-
-    # This (4, 4) matrix transforms the points from lidar space to world space.
-    lidar_2_world = lidar.get_transform().get_matrix()
-
-    # Transform the points from lidar space to world space.
-    world_points = np.dot(lidar_2_world, local_lidar_points)
+def lidar_sensor(lidar_data):
+    global obstacles, last_lidar_data
+    lidar_data = LidarData(lidar_data)
+    if last_lidar_data is not None:
+        obstacles = []
+        for object_index in lidar_data.object_indices:
+            dist_new = lidar_data.query_object_index(object_index)
+            dist_old = last_lidar_data.query_object_index(object_index)
+            if dist_old != np.inf and dist_new != np.inf:
+                obstacles.append((dist_new, (dist_new - dist_old) / (lidar_data.timestamp - last_lidar_data.timestamp)))
+        obstacles.sort(key=lambda obstacle: obstacle[0])
+    last_lidar_data = lidar_data
 
 
 def rgb_sensor(image):
-    global detected_red_traffic_light, last_image
+    global detected_red_traffic_light
     image.convert(cc.Raw)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
     array = np.reshape(array, (image.height, image.width, 4))
@@ -64,7 +55,6 @@ def rgb_sensor(image):
 
     # convert from rgb to bgr
     array = np.array(array[:, :, ::-1])
-    last_image = np.copy(array)
 
     if traffic_light is not None:
         area = cv2.contourArea(traffic_light)
@@ -170,8 +160,6 @@ def gnss_sensor(sensor_data):
 
 
 def vehicle_control(waypoint_transform, vehicle_transform, target_speed) -> Tuple[float, float, float]:
-    if detected_red_traffic_light:
-        return 0.0, 0.0, 1.0
     global steering_delta, speed_delta
 
     # calulate steering delta
@@ -196,12 +184,23 @@ def vehicle_control(waypoint_transform, vehicle_transform, target_speed) -> Tupl
     steering_delta = _dot
     speed_delta = target_speed - current_speed
 
+    if len(obstacles) > 0:
+        speed_delta = min(speed_delta, obstacles[0][1])
+
     K_P_T = 0.5
     K_P_S = 0.5
 
-    throttle = np.clip(speed_delta * K_P_T, 0, 0.5)
     steering = np.clip(steering_delta * K_P_S, -1, 1)
-    return throttle, steering, 0.0
+    if speed_delta > 0:
+        throttle = np.clip(speed_delta * K_P_T, 0, 0.5) / (1 + abs(steering))
+        brake = 0
+    else:
+        throttle = 0
+        brake = np.clip(-speed_delta * K_P_T, 0, 1.0)
+    
+    # if detected_red_traffic_light:
+    #     return 0.0, steering, 1.0
+    return throttle, steering, brake
 
 
 def main(ip: str):
@@ -209,13 +208,21 @@ def main(ip: str):
     try:
         client = carla.Client(ip, 2000)
         client.set_timeout(10.0)
-        world = client.load_world("Town02_Opt", carla.MapLayer.NONE)
-        world.unload_map_layer(carla.MapLayer.Buildings)
-        world.unload_map_layer(carla.MapLayer.Decals)
-        world.unload_map_layer(carla.MapLayer.ParkedVehicles)
-        world.unload_map_layer(carla.MapLayer.Foliage)
-        world.unload_map_layer(carla.MapLayer.Walls)
-        world.unload_map_layer(carla.MapLayer.Props)
+        # world = client.load_world("Town02_Opt", carla.MapLayer.NONE)
+        world = client.get_world()
+        # world.unload_map_layer(carla.MapLayer.Buildings)
+        # world.unload_map_layer(carla.MapLayer.Decals)
+        # world.unload_map_layer(carla.MapLayer.ParkedVehicles)
+        # world.unload_map_layer(carla.MapLayer.Foliage)
+        # world.unload_map_layer(carla.MapLayer.Walls)
+        # world.unload_map_layer(carla.MapLayer.Props)
+
+        # Settings
+        settings = world.get_settings()
+        settings.synchronous_mode = True  # Enables synchronous mode
+        settings.fixed_delta_seconds = 0.1
+        world.apply_settings(settings)
+
         map = world.get_map()
         blueprint_library = world.get_blueprint_library()
         spawn_points = world.get_map().get_spawn_points()
@@ -231,6 +238,7 @@ def main(ip: str):
             except RuntimeError:
                 continue
         print("Spawned vehicle")
+
         # RGB camera
         rgb_camera_bp = blueprint_library.find("sensor.camera.rgb")
         rgb_camera_bp.set_attribute("image_size_x", "1280")
@@ -252,14 +260,14 @@ def main(ip: str):
 
         # Lidar sensor
         lidar_bp = blueprint_library.find("sensor.lidar.ray_cast")
-        lidar_bp.set_attribute('dropoff_general_rate', '0.0')
-        lidar_bp.set_attribute('dropoff_intensity_limit', '1.0')
-        lidar_bp.set_attribute('dropoff_zero_intensity', '0.0')
-        lidar_bp.set_attribute('upper_fov', '30.0')
-        lidar_bp.set_attribute('lower_fov', '-25.0')
-        lidar_bp.set_attribute('channels', '64.0')
-        lidar_bp.set_attribute('range', '100.0')
-        lidar_bp.set_attribute('points_per_second', '100000.0')
+        lidar_bp.set_attribute("dropoff_general_rate", "0.0")
+        lidar_bp.set_attribute("dropoff_intensity_limit", "1.0")
+        lidar_bp.set_attribute("dropoff_zero_intensity", "0.0")
+        lidar_bp.set_attribute("upper_fov", "30.0")
+        lidar_bp.set_attribute("lower_fov", "-25.0")
+        lidar_bp.set_attribute("channels", "64.0")
+        lidar_bp.set_attribute("range", "100.0")
+        lidar_bp.set_attribute("points_per_second", "100000.0")
         lidar = world.spawn_actor(lidar_bp, relative_transform, vehicle)
         lidar.listen(lidar_sensor)
 
@@ -267,6 +275,18 @@ def main(ip: str):
         gnss = blueprint_library.find("sensor.other.gnss")
         gnss = world.spawn_actor(gnss, carla.Transform(), vehicle)
         gnss.listen(gnss_sensor)
+
+        # Lidar sensor
+        lidar_transform = carla.Transform(carla.Location(z=1.9))
+        lidar_bp = blueprint_library.find("sensor.lidar.ray_cast_semantic")
+        lidar_bp.set_attribute("upper_fov", "30.0")
+        lidar_bp.set_attribute("lower_fov", "-25.0")
+        lidar_bp.set_attribute("channels", "64.0")
+        lidar_bp.set_attribute("range", "40.0")
+        lidar_bp.set_attribute("points_per_second", "100000.0")
+        lidar_bp.set_attribute("rotation_frequency", "10")
+        lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
+        lidar.listen(lidar_sensor)
 
         waypoint = map.get_waypoint(vehicle.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
         vehicle.set_transform(waypoint.transform)
@@ -278,21 +298,21 @@ def main(ip: str):
             vehicle.apply_control(control)
             pygame.display.flip()
             pygame.display.update()
+            world.tick()
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     quit()
 
-            if distance_waypoint <= 1 and waypoint_deadzone <= 0:
-                waypoint = random.choice(waypoint.next(2))
+            if distance_waypoint <= 2 and waypoint_deadzone <= 0:
+                waypoint = random.choice(waypoint.next(3))
                 world.debug.draw_point(waypoint.transform.location)
                 waypoint_deadzone = 2
             elif waypoint_deadzone != 0:
                 waypoint_deadzone -= 1
             print(
                 f"throttle: {throttle:.3f}, steering: {steering:.3f}, brake: {brake:.3f}, speed:"
-                f" {current_speed:.3f} m/s, speed delta: {speed_delta:.3f}, steering delta: {steering_delta:.3f},"
-                f" distance waypoint: {distance_waypoint:.3f}",
+                f" {current_speed:.3f} m/s, distance waypoint: {distance_waypoint:.3f}, obstacles: {obstacles}",
                 end="\033[0K\r",
             )
     finally:

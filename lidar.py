@@ -2,62 +2,25 @@ import argparse
 import math
 import random
 import time
-from typing import Tuple
+from typing import List, Tuple
 import numpy as np
 import carla
 import cv2
 from numpy.lib.function_base import average
 import pygame
 from pygame.locals import *
+from sensorclasses import LidarData
 
 from carla import ColorConverter as cc
 
 pygame.init()
 screen = pygame.display.set_mode((1280, 720))
-obstacles = []
-last_lidar_data = None
-
-
-class LidarData:
-    def __init__(self, lidar_data):
-        self.point_cloud = self._convert_to_point_cloud(lidar_data)
-        self.timestamp = lidar_data.timestamp
-        self.distances = np.linalg.norm(self.point_cloud["position"], axis=1)
-        self.object_indices = np.unique(self.point_cloud["object_index"])
-
-    @staticmethod
-    def _convert_to_point_cloud(lidar_data):
-        dtype = np.dtype(
-            [("position", np.float32, (3,)), ("cos_angle", np.float32), ("object_index", np.uint32), ("tag", np.uint32)]
-        )
-        p_cloud = np.frombuffer(lidar_data.raw_data, dtype=dtype)
-        tags = p_cloud["tag"]
-        positions = np.array(p_cloud["position"])
-        return p_cloud[
-            np.logical_and.reduce(
-                (
-                    np.logical_or.reduce((tags == 4, tags == 10)),
-                    positions[:, 0] > 1,
-                    positions[:, 1] < 2,
-                    positions[:, 1] > -2,
-                )
-            )
-        ]
-    
-    def query_object_index(self, object_index):
-        """ Return the distance to the nearest point with object index `object_index` """
-        object_indices = self.point_cloud['object_index'] != object_index
-        distances = np.copy(self.distances)
-        distances[object_indices] = np.inf
-        if len(distances) > 0:
-            return distances[np.argmin(distances)]
-        else:
-            return np.inf
-        
+obstacles: List[Tuple[float, float]] = []
+last_lidar_data: LidarData = None       
 
 
 def lidar_sensor(lidar_data):
-    global nearest_obstacle, last_lidar_data
+    global obstacles, last_lidar_data
     lidar_data = LidarData(lidar_data)
     if last_lidar_data is not None:
         obstacles = []
@@ -68,8 +31,6 @@ def lidar_sensor(lidar_data):
             if dist_old != np.inf and dist_new != np.inf:
                 obstacles.append((dist_new, (dist_new - dist_old)/(lidar_data.timestamp - last_lidar_data.timestamp)))
     last_lidar_data = lidar_data
-    # TODO implement a kind of queue for buffering the data of last 'rotation_frequency'
-    # or maybe set a fixed fps so that one step is one full rotation
 
 
 def rgb_sensor(image):
@@ -89,7 +50,15 @@ def main(ip: str):
     try:
         client = carla.Client(ip, 2000)
         client.set_timeout(10.0)
-        world = client.load_world("Town02_Opt", carla.MapLayer.NONE)
+        # world = client.load_world("Town01_Opt", carla.MapLayer.NONE)
+        world = client.get_world()
+
+        # Settings
+        settings = world.get_settings()
+        settings.synchronous_mode = True # Enables synchronous mode
+        settings.fixed_delta_seconds = 0.1
+        world.apply_settings(settings)
+
         map = world.get_map()
         blueprint_library = world.get_blueprint_library()
         spawn_points = world.get_map().get_spawn_points()
@@ -105,6 +74,7 @@ def main(ip: str):
             except RuntimeError:
                 continue
         print("Spawned vehicle")
+
         # RGB camera
         rgb_camera_bp = blueprint_library.find("sensor.camera.rgb")
         rgb_camera_bp.set_attribute("image_size_x", "1280")
@@ -123,6 +93,7 @@ def main(ip: str):
         lidar_bp.set_attribute("channels", "64.0")
         lidar_bp.set_attribute("range", "40.0")
         lidar_bp.set_attribute("points_per_second", "100000.0")
+        lidar_bp.set_attribute("rotation_frequency", "10")
         lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
         lidar.listen(lidar_sensor)
 
@@ -130,10 +101,10 @@ def main(ip: str):
         vehicle.set_transform(waypoint.transform)
         while 1:
             control = carla.VehicleControl(
-                throttle=0.2, steer=0.0, brake=0.0, hand_brake=False, reverse=False, manual_gear_shift=False
+                throttle=0.1, steer=-0.1, brake=0.0, hand_brake=False, reverse=False, manual_gear_shift=False
             )
             vehicle.apply_control(control)
-            time.sleep(0.1)
+            world.tick()
             pygame.display.flip()
             pygame.display.update()
     finally:
