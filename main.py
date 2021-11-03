@@ -17,10 +17,16 @@ from sensors import LidarData
 pygame.init()
 screen = pygame.display.set_mode((1280, 720))
 
+world = None
+vehicle = None
+
 current_speed = 0.0  # m/s
 prev_sensor_data = None
 steering_delta = 0
+steering = 0
 speed_delta = 0
+throttle = 0
+brake = 0
 distance_waypoint = 0
 waypoint = None
 traffic_light = None
@@ -160,7 +166,7 @@ def gnss_sensor(sensor_data):
 
 
 def vehicle_control(waypoint_transform, vehicle_transform, target_speed) -> Tuple[float, float, float]:
-    global steering_delta, speed_delta
+    global steering_delta, speed_delta, throttle, steering, brake
 
     # calulate steering delta
     forward_vector = vehicle_transform.get_forward_vector()
@@ -197,19 +203,53 @@ def vehicle_control(waypoint_transform, vehicle_transform, target_speed) -> Tupl
     else:
         throttle = 0
         brake = np.clip(-speed_delta * K_P_T, 0, 1.0)
-    
+
     # if detected_red_traffic_light:
     #     return 0.0, steering, 1.0
     return throttle, steering, brake
 
 
+def visualize_path():
+    t = np.arange(0, 10.0, 0.1)
+    points = np.zeros((t.shape[0], 3))
+
+    if steering == 0:
+        points[:, 0] = np.copy(t)
+        points[:, 1] = np.zeros_like(points[:, 0])
+        points[:, 2] = np.full_like(points[:, 0], -1.8)
+    else:
+        r = 10 * (1 / np.abs(steering)) * throttle
+        points[:, 0] = r * np.sin(t / r * np.pi)
+        points[:, 1] = -r * (np.cos(t / r * np.pi) - 1) * np.sign(steering)
+        points[:, 2] = np.full_like(points[:, 0], -1.8)
+        
+    points = np.concatenate((points, np.ones((points.shape[0], 1))), axis=1).T
+
+    lidar_2_world = lidar.get_transform().get_matrix()
+
+    # Transform the points from lidar space to world space.
+    points = np.dot(lidar_2_world, points)
+
+    # convert to global coordinate coordinate system
+
+    for i in range(points.shape[1] - 1):
+        world.debug.draw_line(
+            carla.Location(x=points[0, i], y=points[1, i], z=points[2, i]),
+            carla.Location(x=points[0, i + 1], y=points[1, i + 1], z=points[2, i + 1]),
+            0.1,
+            carla.Color(255, 0, 0),
+            0.15,
+        )
+    pass
+
+
 def main(ip: str):
-    global waypoint, waypoint_deadzone, lidar
+    global waypoint, waypoint_deadzone, lidar, world, vehicle
     try:
         client = carla.Client(ip, 2000)
         client.set_timeout(10.0)
-        # world = client.load_world("Town02_Opt", carla.MapLayer.NONE)
-        world = client.get_world()
+        world = client.load_world("Town02_Opt", carla.MapLayer.NONE)
+        # world = client.get_world()
         # world.unload_map_layer(carla.MapLayer.Buildings)
         # world.unload_map_layer(carla.MapLayer.Decals)
         # world.unload_map_layer(carla.MapLayer.ParkedVehicles)
@@ -245,7 +285,7 @@ def main(ip: str):
         rgb_camera_bp.set_attribute("image_size_y", "720")
         rgb_camera_bp.set_attribute("fov", "60")
         rgb_camera_bp.set_attribute("sensor_tick", "0.02")
-        relative_transform = carla.Transform(carla.Location(x=1.2, y=-0.5, z=1.7), carla.Rotation(yaw=0))
+        relative_transform = carla.Transform(carla.Location(x=1.2, y=0, z=1.7), carla.Rotation(yaw=0))
         rgb_camera = world.spawn_actor(rgb_camera_bp, relative_transform, vehicle)
         rgb_camera.listen(rgb_sensor)
 
@@ -296,6 +336,9 @@ def main(ip: str):
                 throttle=throttle, steer=steering, brake=brake, hand_brake=False, reverse=False, manual_gear_shift=False
             )
             vehicle.apply_control(control)
+
+            visualize_path()
+
             pygame.display.flip()
             pygame.display.update()
             world.tick()
