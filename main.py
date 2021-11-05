@@ -191,7 +191,7 @@ def vehicle_control(waypoint_transform, vehicle_transform, target_speed) -> Tupl
     speed_delta = target_speed - current_speed
 
     if len(obstacles) > 0:
-        speed_delta = min(speed_delta, obstacles[0][1])
+        speed_delta = min(speed_delta, obstacles[0][1] + (obstacles[0][0] - 3) / 2)
 
     K_P_T = 0.5
     K_P_S = 0.5
@@ -204,8 +204,8 @@ def vehicle_control(waypoint_transform, vehicle_transform, target_speed) -> Tupl
         throttle = 0
         brake = np.clip(-speed_delta * K_P_T, 0, 1.0)
 
-    # if detected_red_traffic_light:
-    #     return 0.0, steering, 1.0
+    if detected_red_traffic_light:
+        return 0.0, steering, 1.0
     return throttle, steering, brake
 
 
@@ -213,8 +213,8 @@ def visualize_path():
     t = np.arange(0, 10.0, 0.1)
     points = np.zeros((t.shape[0], 3))
 
-    if steering == 0:
-        points[:, 0] = np.copy(t)
+    if np.abs(steering) <= 1e-3:
+        points[:, 0] = np.copy(t) * 5
         points[:, 1] = np.zeros_like(points[:, 0])
         points[:, 2] = np.full_like(points[:, 0], -1.8)
     else:
@@ -337,7 +337,7 @@ def main(ip: str):
             )
             vehicle.apply_control(control)
 
-            visualize_path()
+            # visualize_path()
 
             pygame.display.flip()
             pygame.display.update()
