@@ -1,18 +1,14 @@
 import argparse
 import math
 import random
-import time
 from typing import List, Tuple
 import numpy as np
 import carla
 import cv2
-from numpy.lib.function_base import average
 import pygame
 from pygame.locals import *
 
 from carla import ColorConverter as cc
-
-from sensors import LidarData
 
 pygame.init()
 screen = pygame.display.set_mode((1280, 720))
@@ -34,7 +30,66 @@ traffic_sign = None
 detected_red_traffic_light = False
 waypoint_deadzone = 0
 
-obstacles: List[Tuple[float, float]] = []
+# CONSTANTS
+ROAD_WIDTH = 3.0
+TRAFFIC_LIGHT_SENSITIVITY = 0.4
+LIDAR_DISTANCE = 50.0
+
+
+class LidarData:
+    def __init__(
+        self,
+        lidar_data,
+    ):
+        self.point_cloud = self._convert_to_point_cloud(lidar_data)
+        self.timestamp = lidar_data.timestamp
+
+        # Calculate as only x-axis, should do distance in forward direction, but oh well
+
+        # self.distances = np.linalg.norm(self.point_cloud["position"], axis=1)
+        self.distances = self.point_cloud["position"][:, 0]
+        self.object_indices = np.unique(self.point_cloud["object_index"])
+
+    @staticmethod
+    def valid_points(points: np.ndarray, tags: np.ndarray) -> np.ndarray:
+        if np.abs(steering) <= 1e-4:
+            return np.logical_and.reduce(
+                np.logical_or.reduce((tags == 4, tags == 10)),
+                (points[:, 0] < LIDAR_DISTANCE, points[:, 0] > 1, points[:, 1] < 2, points[:, 1] > -2),
+            )
+        else:
+            r = 8 * (1 / np.abs(steering)) * (0.8 + throttle * 0.2)
+            r1 = r - (ROAD_WIDTH / 2) * (0.8 + throttle * 0.2)
+            r2 = r + (ROAD_WIDTH / 2) * (0.8 + throttle * 0.2)
+            return np.logical_and.reduce(
+                np.logical_or.reduce((tags == 4, tags == 10)),
+                np.linalg.norm(points[:, 0] > 1, points[:, :2], axis=1) >= r1,
+                np.linalg.norm(points[:, :2], axis=1) <= r2,
+            )
+
+    @staticmethod
+    def _convert_to_point_cloud(lidar_data):
+        dtype = np.dtype(
+            [("position", np.float32, (3,)), ("cos_angle", np.float32), ("object_index", np.uint32), ("tag", np.uint32)]
+        )
+        p_cloud = np.frombuffer(lidar_data.raw_data, dtype=dtype)
+        tags = p_cloud["tag"]
+        positions = np.array(p_cloud["position"])
+        return p_cloud[LidarData.valid_points(positions, tags)]
+
+    def query_object_index(self, object_index) -> Tuple[float, np.ndarray]:
+        """Return the distance to the nearest point with object index `object_index` and the position"""
+        object_indices = self.point_cloud["object_index"] != object_index
+        distances = np.copy(self.distances)
+        distances[object_indices] = np.inf
+        if len(distances) > 0:
+            i = np.argmin(distances)
+            return distances[i], self.point_cloud["position"][i, :]
+        else:
+            return np.inf, self.point_cloud["position"][0, :]
+
+
+obstacles: List[Tuple[float, float, np.ndarray]] = []
 last_lidar_data: LidarData = None
 
 
@@ -44,11 +99,17 @@ def lidar_sensor(lidar_data):
     if last_lidar_data is not None:
         obstacles = []
         for object_index in lidar_data.object_indices:
-            dist_new = lidar_data.query_object_index(object_index)
-            dist_old = last_lidar_data.query_object_index(object_index)
+            dist_new, point = lidar_data.query_object_index(object_index)
+            dist_old, _ = last_lidar_data.query_object_index(object_index)
             if dist_old != np.inf and dist_new != np.inf:
-                obstacles.append((dist_new, (dist_new - dist_old) / (lidar_data.timestamp - last_lidar_data.timestamp)))
+                obstacles.append(
+                    (dist_new, (dist_new - dist_old) / (lidar_data.timestamp - last_lidar_data.timestamp), point)
+                )
         obstacles.sort(key=lambda obstacle: obstacle[0])
+    if len(obstacles) > 0:
+        world.debug.draw_point(
+            waypoint.transform.location(*obstacles[0][2]), size=0.1, color=carla.Color(255, 0, 0), life_time=0.1
+        )
     last_lidar_data = lidar_data
 
 
@@ -74,14 +135,14 @@ def rgb_sensor(image):
         average_colours = average_colours / np.sum(average_colours)
 
         point = (max(traffic_light[:, 0, 0]), min(traffic_light[:, 0, 1]))
-        if average_colours[0] > 0.37:
+        if average_colours[0] > TRAFFIC_LIGHT_SENSITIVITY:
             cv2.drawContours(array, [traffic_light], -1, (255, 0, 0), 1)
             cv2.putText(array, f"{average_colours[0]:.2f},{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 1)
         else:
             cv2.drawContours(array, [traffic_light], -1, (0, 255, 0), 1)
             cv2.putText(array, f"{average_colours[0]:.2f},{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 1)
 
-        if area > 1800 and average_colours[0] > 0.37:
+        if area > 1800 and average_colours[0] > TRAFFIC_LIGHT_SENSITIVITY:
             detected_red_traffic_light = True
         else:
             detected_red_traffic_light = False
@@ -210,19 +271,27 @@ def vehicle_control(waypoint_transform, vehicle_transform, target_speed) -> Tupl
 
 
 def visualize_path():
-    t = np.arange(0, 10.0, 0.1)
-    points = np.zeros((t.shape[0], 3))
+    t = np.arange(0, LIDAR_DISTANCE / 5, 0.1)
+    points = np.zeros((t.shape[0], 9))
 
-    if np.abs(steering) <= 1e-3:
-        points[:, 0] = np.copy(t) * 5
-        points[:, 1] = np.zeros_like(points[:, 0])
-        points[:, 2] = np.full_like(points[:, 0], -1.8)
+    if np.abs(steering) <= 1e-4:
+        points[:, [0, 3, 6]] = np.array([np.copy(t) * 5, np.copy(t) * 5, np.copy(t) * 5]).T
+        points[:, [1, 4, 7]] = np.full_like(points[:, :3], [-ROAD_WIDTH / 2, 0, ROAD_WIDTH / 2])
     else:
-        r = 10 * (1 / np.abs(steering)) * throttle
+        r = 8 * (1 / np.abs(steering)) * (0.8 + throttle * 0.2)
         points[:, 0] = r * np.sin(t / r * np.pi)
         points[:, 1] = -r * (np.cos(t / r * np.pi) - 1) * np.sign(steering)
-        points[:, 2] = np.full_like(points[:, 0], -1.8)
-        
+        r = r - ROAD_WIDTH / 2
+        points[:, 3] = r * np.sin(t / r * np.pi)
+        points[:, 4] = -r * (np.cos(t / r * np.pi) - 1) * np.sign(steering) - ROAD_WIDTH / 2
+        r = r + ROAD_WIDTH
+        points[:, 6] = r * np.sin(t / r * np.pi)
+        points[:, 7] = -r * (np.cos(t / r * np.pi) - 1) * np.sign(steering) + ROAD_WIDTH / 2
+
+    points[:, [2, 5, 8]] = np.full_like(points[:, :3], -1.8)
+
+    points = points.reshape((points.shape[0] * 3, 3))
+
     points = np.concatenate((points, np.ones((points.shape[0], 1))), axis=1).T
 
     lidar_2_world = lidar.get_transform().get_matrix()
@@ -232,15 +301,14 @@ def visualize_path():
 
     # convert to global coordinate coordinate system
 
-    for i in range(points.shape[1] - 1):
+    for i in range(points.shape[1] - 3):
         world.debug.draw_line(
             carla.Location(x=points[0, i], y=points[1, i], z=points[2, i]),
-            carla.Location(x=points[0, i + 1], y=points[1, i + 1], z=points[2, i + 1]),
-            0.1,
+            carla.Location(x=points[0, i + 3], y=points[1, i + 3], z=points[2, i + 3]),
+            0.02,
             carla.Color(255, 0, 0),
             0.15,
         )
-    pass
 
 
 def main(ip: str):
@@ -248,7 +316,7 @@ def main(ip: str):
     try:
         client = carla.Client(ip, 2000)
         client.set_timeout(10.0)
-        world = client.load_world("Town02_Opt", carla.MapLayer.NONE)
+        world = client.load_world("Town07")
         # world = client.get_world()
         # world.unload_map_layer(carla.MapLayer.Buildings)
         # world.unload_map_layer(carla.MapLayer.Decals)
@@ -322,7 +390,7 @@ def main(ip: str):
         lidar_bp.set_attribute("upper_fov", "30.0")
         lidar_bp.set_attribute("lower_fov", "-25.0")
         lidar_bp.set_attribute("channels", "64.0")
-        lidar_bp.set_attribute("range", "40.0")
+        lidar_bp.set_attribute("range", str(LIDAR_DISTANCE))
         lidar_bp.set_attribute("points_per_second", "100000.0")
         lidar_bp.set_attribute("rotation_frequency", "10")
         lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
@@ -337,7 +405,7 @@ def main(ip: str):
             )
             vehicle.apply_control(control)
 
-            # visualize_path()
+            visualize_path()
 
             pygame.display.flip()
             pygame.display.update()
