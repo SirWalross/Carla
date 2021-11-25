@@ -1,5 +1,4 @@
 from typing import Dict, List, Optional, Tuple
-from numpy.lib.index_tricks import s_
 import untangle
 import matplotlib.pyplot as plt
 import numpy as np
@@ -214,13 +213,6 @@ class Poly3:
     def get_grad(self, s: float):
         return self.b + 2 * self.c * s + 3 * self.d * s * s
 
-    # def approximate_linear(self, eps: float, s_start: float, s_end: float) -> List[float]:
-    #     if s_start == s_end:
-    #         return []
-
-
-# plt.show()
-
 if __name__ == "__main__":
-    open_drive_map = OpenDriveMap("map07.xodr")
+    open_drive_map = OpenDriveMap("OpenDriveMaps/map07.xodr")
     open_drive_map.render()
