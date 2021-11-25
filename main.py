@@ -63,7 +63,8 @@ class LidarData:
             r2 = r + (ROAD_WIDTH / 2) * (0.8 + throttle * 0.2)
             return np.logical_and.reduce(
                 np.logical_or.reduce((tags == 4, tags == 10)),
-                np.linalg.norm(points[:, 0] > 1, points[:, :2], axis=1) >= r1,
+                points[:, 0] > 1, 
+                np.linalg.norm(points[:, :2], axis=1) >= r1,
                 np.linalg.norm(points[:, :2], axis=1) <= r2,
             )
 

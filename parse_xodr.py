@@ -2,11 +2,8 @@ import untangle
 import matplotlib.pyplot as plt
 import numpy as np
 
-xodr = untangle.parse("map.xodr")
+xodr = untangle.parse("map07.xodr")
 
-plt.ion()
-
-plt.show()
 
 for road in xodr.OpenDRIVE.road:
     plan_view = road.planView
@@ -27,4 +24,4 @@ for road in xodr.OpenDRIVE.road:
             x = x + np.sin(phi) * 1 / curvature - np.sin(hdg) * 1 / curvature
             y = y + np.cos(phi) * 1 / curvature - np.cos(hdg) * 1 / curvature
         plt.plot(x, y)
-pass
+plt.show()
