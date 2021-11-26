@@ -3,6 +3,7 @@ from typing import Dict, List, Optional, Tuple
 import untangle
 import matplotlib.pyplot as plt
 import numpy as np
+import sys
 
 
 class Road:
@@ -121,6 +122,15 @@ class LaneSection:
         self.lanes: Dict[int, Lane] = {}  # from id to lane
         self.length = length
 
+    def find_lanes(self, id: int) -> List["Lane"]:
+        lanes: List[Lane] = []
+
+        for lane_id, lane in self.lanes.items():
+            if np.sign(lane_id) == np.sign(id):
+                lanes.append(lane)
+
+        return lanes
+
 
 class Lane:
     def __init__(self, id: int, level: bool, type: str, direction: str) -> None:
@@ -129,10 +139,34 @@ class Lane:
         self.type = type
         self.direction = direction
         self.road: Road = None
-        self.widths: Dict[float, Poly3] = {}  # from s to poly3
+        self.widths: List[Dict[float, Poly3]] = []  # list of widths of the current and previous lanes
         self.predecessor: int = -1
         self.successor: int = -1
         self.lane_section: LaneSection = None
+    
+    def get_width(self, s: np.ndarray, middle_lane: bool = False) -> np.ndarray:
+        width = np.zeros_like(s)
+        if self.id > 0:
+            for i, s0 in enumerate(s):
+                width[i] = sum(
+                    [
+                        width[
+                            list(width.keys())[np.searchsorted(list(width.keys()), s0, side="right") - 1]
+                        ].get(s0) * (0.5 if middle_lane and (j == len(self.widths) - 1) else 1)
+                        for j, width in enumerate(self.widths)
+                    ]
+                )
+        else:
+            for i, s0 in enumerate(s):
+                width[i] = sum(
+                    [
+                        width[list(width.keys())[np.searchsorted(list(width.keys()), s0, side="right") - 1]]
+                        .negate()
+                        .get(s0) * (0.5 if middle_lane and (j == len(self.widths) - 1) else 1)
+                        for j, width in enumerate(self.widths)
+                    ]
+                )
+        return width
 
 
 class Poly3:
@@ -155,6 +189,7 @@ class Poly3:
 
 class OpenDriveMap:
     def __init__(self, xodr_file: str):
+        reverse = lambda l: l[::-1] if isinstance(l, list) else l
         self.possible_paths: List[List[Lane]] = []
 
         self.xodr = untangle.parse(xodr_file)
@@ -215,7 +250,7 @@ class OpenDriveMap:
 
                 lane_nodes = []
                 try:
-                    lane_nodes.extend(lane_section_node.left.lane)
+                    lane_nodes.extend(reverse(lane_section_node.left.lane))
                 except AttributeError:
                     pass
                 try:
@@ -226,6 +261,8 @@ class OpenDriveMap:
                     lane_nodes.extend(lane_section_node.right.lane)
                 except AttributeError:
                     pass
+
+                poly: Tuple[int, List[Dict[float, Poly3]]] = (1, [])
 
                 for lane_node in lane_nodes:
                     lane_id = int(lane_node["id"])
@@ -244,14 +281,21 @@ class OpenDriveMap:
                     lane_section.lanes[lane_id] = lane
                     lane.lane_section = lane_section
 
+                    if np.sign(lane_id) != np.sign(poly[0]):
+                        assert np.sign(lane_id) == -1
+                        poly = (-1, [])
+
                     try:
+                        widths: Dict[float, Poly3] = {}
                         for lane_width_node in lane_node.width:
                             s_offset = float(lane_width_node["sOffset"])
                             a = float(lane_width_node["a"])
                             b = float(lane_width_node["b"])
                             c = float(lane_width_node["c"])
                             d = float(lane_width_node["d"])
-                            lane.widths[s + s_offset] = Poly3(s + s_offset, a, b, c, d)
+                            widths[s + s_offset] = Poly3(s + s_offset, a, b, c, d)
+                        poly[1].append(widths)
+                        lane.widths = [*poly[1]]
                     except AttributeError:
                         pass
 
@@ -322,22 +366,12 @@ class OpenDriveMap:
                     if lane not in lanes:
                         continue
                     s = np.arange(0, lane_section.length, eps)
-                    keys = list(lane.widths.keys())
-                    if lane.id > 0:
-                        width = [
-                            offset[i] + lane.widths[keys[np.searchsorted(keys, s0, side="right") - 1]].get(s0)
-                            for i, s0 in enumerate(s)
-                        ]
-                    else:
-                        width = [
-                            offset[i] + lane.widths[keys[np.searchsorted(keys, s0, side="right") - 1]].negate().get(s0)
-                            for i, s0 in enumerate(s)
-                        ]
+                    width = lane.get_width(s, middle_lane=True)
                     xy = np.array(
                         [
                             (
-                                ref_line_section_xy[i, 0] - ref_line_section_xy[i, 3] * width[i] / 2,
-                                ref_line_section_xy[i, 1] + ref_line_section_xy[i, 2] * width[i] / 2,
+                                ref_line_section_xy[i, 0] - ref_line_section_xy[i, 3] * width[i],
+                                ref_line_section_xy[i, 1] + ref_line_section_xy[i, 2] * width[i],
                             )
                             for i, _ in enumerate(s)
                         ]
@@ -367,7 +401,7 @@ class OpenDriveMap:
         self._highlight_lanes([lane1, lane2], color="black")
 
     def _dfs(self, visited_lanes: List[Lane], current_lane: Lane, path: List[Lane], goal: Lane):
-        if len(self.possible_paths) > 100000:
+        if len(self.possible_paths) > 1000:
             raise ValueError("Found enough paths")
         current_road = current_lane.lane_section.road
 
@@ -383,17 +417,11 @@ class OpenDriveMap:
                 # next road is of type road
                 next_road = self._find_road(next_road_link.id)
 
-                # TODO: check if you can change lane
-
                 if (next_road_link.contactPoint != "start") != (link != "successor"):
                     # flip next road
-                    try:
-                        next_lane = list(next_road.lane_sections.values())[-1].lanes[-current_lane.id]
-                    except KeyError:
-                        next_lane = list(next_road.lane_sections.values())[-1].lanes[getattr(current_lane, link)]
-                    next_lanes.append(next_lane)
+                    next_lanes.extend(list(next_road.lane_sections.values())[-1].find_lanes(-current_lane.id))
                 else:
-                    next_lanes.append(next_road.lane_sections[0].lanes[current_lane.id])
+                    next_lanes.extend(next_road.lane_sections[0].find_lanes(current_lane.id))
             else:
                 # next road is of type junction
                 junction = self._find_junction(next_road_link.id)
@@ -466,17 +494,7 @@ class OpenDriveMap:
                 )
                 for _, lane in lane_section.lanes.items():
                     s = np.arange(0, lane_section.length, eps)
-                    keys = list(lane.widths.keys())
-                    if lane.id > 0:
-                        width = [
-                            offset[i] + lane.widths[keys[np.searchsorted(keys, s0, side="right") - 1]].get(s0)
-                            for i, s0 in enumerate(s)
-                        ]
-                    else:
-                        width = [
-                            offset[i] + lane.widths[keys[np.searchsorted(keys, s0, side="right") - 1]].negate().get(s0)
-                            for i, s0 in enumerate(s)
-                        ]
+                    width = lane.get_width(s)
                     xy = np.array(
                         [
                             (
@@ -490,8 +508,9 @@ class OpenDriveMap:
 
 
 if __name__ == "__main__":
-    # plt.ion()
-    # plt.show()
+    if len(sys.argv) > 1:
+        plt.ion()
+    plt.show()
     open_drive_map = OpenDriveMap("OpenDriveMaps/map07.xodr")
     open_drive_map.render()
     open_drive_map.find_route("Road 0", 0, -1, "Road 11", 0, -1)
