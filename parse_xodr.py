@@ -387,22 +387,27 @@ class OpenDriveMap:
         lane2: Lane = next(lane for lane in section2.lanes.values() if lane.id == lane2)
 
         curr = time()
-        try:
-            self._dfs([], lane1, [lane1], lane2)
-        except ValueError:
-            if len(self.possible_paths) == 0:
-                raise ValueError("Didnt find possible path")
-        print(f"Search for route took {time() - curr:.2f}s, with {len(self.possible_paths)} possible routes")
+        max_depth = 10
+        while len(self.possible_paths) == 0:
+            try:
+                self._dfs([], lane1, [lane1], lane2, max_depth=max_depth)
+            except ValueError:
+                if len(self.possible_paths) == 0:
+                    raise ValueError("Didnt find possible path")
+            max_depth += 10
         shortest_path = sorted(self.possible_paths, key=lambda path: sum([lane.lane_section.length for lane in path]))[
             0
         ]
+        print(f"Search for route took {time() - curr:.2f}s, with {len(self.possible_paths)} possible routes, shortest: {len(shortest_path)}")
 
         self._highlight_lanes(shortest_path)
         self._highlight_lanes([lane1, lane2], color="black")
 
-    def _dfs(self, visited_lanes: List[Lane], current_lane: Lane, path: List[Lane], goal: Lane):
-        if len(self.possible_paths) > 1000:
+    def _dfs(self, visited_lanes: List[Lane], current_lane: Lane, path: List[Lane], goal: Lane, max_depth: int = 40):
+        if len(self.possible_paths) > 50000:
             raise ValueError("Found enough paths")
+        elif len(path) >= max_depth:
+            raise ValueError("Path to long")
         current_road = current_lane.lane_section.road
 
         next_lanes = []
@@ -513,5 +518,6 @@ if __name__ == "__main__":
     plt.show()
     open_drive_map = OpenDriveMap("OpenDriveMaps/map07.xodr")
     open_drive_map.render()
-    open_drive_map.find_route("Road 0", 0, -1, "Road 11", 0, -1)
+    open_drive_map.find_route("Road 57", 0, 1, "Road 60", 0, 1)
+    plt.axis('square')
     plt.show()
