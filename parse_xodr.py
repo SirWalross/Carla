@@ -16,9 +16,9 @@ class Road:
         self.ref_line = RefLine(self.length)
         self.lane_sections: Dict[float, LaneSection] = {}  # from s0 to lane section
         self.offset: Dict[float, Poly3] = {}  # from s to poly3
-    
+
     def next_lane(self, lane: "Lane") -> Optional["Lane"]:
-        assert(lane.lane_section.road == self)
+        assert lane.lane_section.road == self
         travelDir = lane.direction
         lanes = [lane_section.lanes[lane.id] for lane_section in list(self.lane_sections.values())]
 
@@ -34,12 +34,14 @@ class Road:
             else:
                 return None
 
-class LaneLink():
+
+class LaneLink:
     def __init__(self, from_id: int, to_id: int):
         self.from_id = from_id
         self.to_id = to_id
 
-class Connection():
+
+class Connection:
     def __init__(self, id: int, incomingRoad: int, connectingRoad: int, contactPoint: str):
         self.id = id
         self.incomingRoad = incomingRoad
@@ -47,10 +49,12 @@ class Connection():
         self.contactPoint = contactPoint
         self.lane_links: Dict[int, LaneLink] = {}
 
+
 class Junction:
     def __init__(self, id: int):
         self.id = id
         self.connections: Dict[int, Connection] = {}
+
 
 class RefLine:
     def __init__(self, length: float) -> None:
@@ -161,11 +165,14 @@ class OpenDriveMap:
 
             # parse road links
             for link in ["predecessor", "successor"]:
-                road_link_node = getattr(road_node.link, link)
-                road_link = RoadLink(
-                    int(road_link_node["elementId"]), road_link_node["elementType"], road_link_node["contactPoint"]
-                )
-                setattr(road, link, road_link)
+                try:
+                    road_link_node = getattr(road_node.link, link)
+                    road_link = RoadLink(
+                        int(road_link_node["elementId"]), road_link_node["elementType"], road_link_node["contactPoint"]
+                    )
+                    setattr(road, link, road_link)
+                except AttributeError:
+                    pass
 
             # parse road geometries
             for geometry_hdr_node in road_node.planView.geometry:
@@ -227,7 +234,11 @@ class OpenDriveMap:
 
                     if lane_type != "driving":
                         continue
-                    direction = lane_node.userData.vectorLane[0]["travelDir"] if isinstance(lane_node.userData.vectorLane, list) else lane_node.userData.vectorLane["travelDir"]
+                    direction = (
+                        lane_node.userData.vectorLane[0]["travelDir"]
+                        if isinstance(lane_node.userData.vectorLane, list)
+                        else lane_node.userData.vectorLane["travelDir"]
+                    )
                     lane = Lane(lane_id, level, lane_type, direction)
                     lane.road = road
                     lane_section.lanes[lane_id] = lane
@@ -245,11 +256,11 @@ class OpenDriveMap:
                         pass
 
                     try:
-                        lane.predecessor = lane_node.link.predecessor["id"]
+                        lane.predecessor = int(lane_node.link.predecessor["id"])
                     except AttributeError:
                         pass
                     try:
-                        lane.successor = lane_node.link.successor["id"]
+                        lane.successor = int(lane_node.link.successor["id"])
                     except AttributeError:
                         pass
             if all([not bool(lane_section.lanes) for _, lane_section in road.lane_sections.items()]):
@@ -263,19 +274,24 @@ class OpenDriveMap:
             # parse connections
             for connection_node in junction_node.connection:
                 id = int(connection_node["id"])
-                connection = Connection(id, int(connection_node["incomingRoad"]), int(connection_node["connectingRoad"]), connection_node["contactPoint"])
+                connection = Connection(
+                    id,
+                    int(connection_node["incomingRoad"]),
+                    int(connection_node["connectingRoad"]),
+                    connection_node["contactPoint"],
+                )
 
                 # parse lane links
                 for lane_link_node in connection_node.laneLink:
                     lane_link = LaneLink(int(lane_link_node["from"]), int(lane_link_node["to"]))
 
                     connection.lane_links[lane_link.from_id] = lane_link
-                
+
                 junction.connections[id] = connection
-            
+
             self.junctions.append(junction)
-    
-    def _highlight_lanes(self, lanes: List[Lane], color = 'orange', eps: float = 0.1):
+
+    def _highlight_lanes(self, lanes: List[Lane], color="orange", eps: float = 0.1):
         roads = [lane.lane_section.road for lane in lanes]
         # highlight lanes
         for road in roads:
@@ -320,14 +336,13 @@ class OpenDriveMap:
                     xy = np.array(
                         [
                             (
-                                ref_line_section_xy[i, 0] - ref_line_section_xy[i, 3] * width[i]/2,
-                                ref_line_section_xy[i, 1] + ref_line_section_xy[i, 2] * width[i]/2,
+                                ref_line_section_xy[i, 0] - ref_line_section_xy[i, 3] * width[i] / 2,
+                                ref_line_section_xy[i, 1] + ref_line_section_xy[i, 2] * width[i] / 2,
                             )
                             for i, _ in enumerate(s)
                         ]
                     )
                     plt.plot(xy[:, 0], xy[:, 1], c=color)
-
 
     def find_route(self, road1: str, section1: int, lane1: int, road2: str, section2: int, lane2: int):
         road1: Road = next(road for road in self.roads if road.name == road1)
@@ -343,15 +358,18 @@ class OpenDriveMap:
         except ValueError:
             if len(self.possible_paths) == 0:
                 raise ValueError("Didnt find possible path")
-        print(f"Finding of route, with {len(self.possible_paths)} possible routes, took {time() - curr}s")
-        shortest_path = sorted(self.possible_paths, key=lambda path: sum([lane.lane_section.length for lane in path]))[0]
+        print(f"Search for route took {time() - curr:.2f}s, with {len(self.possible_paths)} possible routes")
+        shortest_path = sorted(self.possible_paths, key=lambda path: sum([lane.lane_section.length for lane in path]))[
+            0
+        ]
 
         self._highlight_lanes(shortest_path)
-        self._highlight_lanes([lane1, lane2], color='black')
+        self._highlight_lanes([lane1, lane2], color="black")
 
     def _dfs(self, visited_lanes: List[Lane], current_lane: Lane, path: List[Lane], goal: Lane):
+        if len(self.possible_paths) > 100000:
+            raise ValueError("Found enough paths")
         current_road = current_lane.lane_section.road
-        current_section = current_lane.lane_section
 
         next_lanes = []
         next_lane = current_road.next_lane(current_lane)
@@ -359,20 +377,27 @@ class OpenDriveMap:
             # already at last lane_section
             link = "successor" if current_lane.direction == "forward" else "predecessor"
             next_road_link = getattr(current_road, link)
-            if next_road_link.type == "road":
+            if next_road_link is None:
+                raise ValueError("Dead end")
+            elif next_road_link.type == "road":
                 # next road is of type road
                 next_road = self._find_road(next_road_link.id)
 
+                # TODO: check if you can change lane
+
                 if (next_road_link.contactPoint != "start") != (link != "successor"):
-                    # flip next road 
-                    next_lane = list(next_road.lane_sections.values())[-1].lanes[-current_lane.id]
+                    # flip next road
+                    try:
+                        next_lane = list(next_road.lane_sections.values())[-1].lanes[-current_lane.id]
+                    except KeyError:
+                        next_lane = list(next_road.lane_sections.values())[-1].lanes[getattr(current_lane, link)]
                     next_lanes.append(next_lane)
                 else:
                     next_lanes.append(next_road.lane_sections[0].lanes[current_lane.id])
             else:
                 # next road is of type junction
                 junction = self._find_junction(next_road_link.id)
-                
+
                 # find next roads
                 next_roads = []
                 for connection in junction.connections.values():
@@ -384,18 +409,17 @@ class OpenDriveMap:
 
                 for next_road, lane_links in next_roads:
                     # find next lane
-                    next_lanes.append(next_road.lane_sections[0].lanes[lane_links[current_lane.id].to_id])
+                    try:
+                        next_lanes.append(next_road.lane_sections[0].lanes[lane_links[current_lane.id].to_id])
+                    except KeyError:
+                        # lane_link didnt connect the current_lane id to another road
+                        pass
         else:
             next_lanes.append(next_lane)
-        
+
         for next_lane in next_lanes:
             if goal == next_lane:
                 self.possible_paths.append([*path, next_lane])
-
-                # find all possible paths
-                # if len(self.possible_paths) > 4:
-                #     path.append(next_lane)
-                #     return path
             if next_lane in path:
                 continue
             else:
@@ -408,7 +432,7 @@ class OpenDriveMap:
 
     def _find_road(self, roadId: int) -> Road:
         return next(road for road in self.roads if road.id == roadId)
-    
+
     def _find_junction(self, junctionId: int) -> Junction:
         return next(junction for junction in self.junctions if junction.id == junctionId)
 
@@ -466,9 +490,9 @@ class OpenDriveMap:
 
 
 if __name__ == "__main__":
-    plt.ion()
-    plt.show()
-    open_drive_map = OpenDriveMap("OpenDriveMaps/map02.xodr")
+    # plt.ion()
+    # plt.show()
+    open_drive_map = OpenDriveMap("OpenDriveMaps/map07.xodr")
     open_drive_map.render()
-    open_drive_map.find_route("Road 19", 0, -1, "Road 1", 0, -1)
+    open_drive_map.find_route("Road 0", 0, -1, "Road 11", 0, -1)
     plt.show()
