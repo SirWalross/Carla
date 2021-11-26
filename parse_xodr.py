@@ -52,9 +52,14 @@ class OpenDriveMap:
                 road.offset[s] = Poly3(s, a, b, c, d)
 
             # parse road line sections and lanes
-            for lane_section_node in road_node.lanes.laneSection:
+            for i, lane_section_node in enumerate(road_node.lanes.laneSection):
                 s = float(lane_section_node["s"])
-                lane_section = LaneSection(s)
+                lane_section = LaneSection(s, road.length - s)
+
+                if i != 0:
+                    old_lane_section = road.lane_sections[list(road.lane_sections.keys())[-1]]
+                    old_lane_section.length = s - old_lane_section.s
+
                 lane_section.road = road
                 road.lane_sections[s] = lane_section
 
@@ -107,18 +112,56 @@ class OpenDriveMap:
             self.roads.append(road)
 
     def render(self, eps: float = 0.1):
+        # plt.ion()
+        # plt.show()
         for road in self.roads:
-            ref_line_xy = ([], [])
+            ref_line_xy = [[], [], [], [], []]  # x, y, dx, dy
             for _, geometry in road.ref_line.geometries.items():
                 s = np.arange(geometry.s, geometry.s + geometry.length, eps)
-                vec = np.vectorize(geometry.get_xy)
-                xy = vec(s)
-                ref_line_xy[0].extend(xy[0])
-                ref_line_xy[1].extend(xy[1])
-            plt.plot(ref_line_xy[0], ref_line_xy[1], "b")
-            for s, lane_section in road.lane_sections.items():
-                for id, lane in lane_section.lanes.items():
+                get_xy = np.vectorize(geometry.get_xy)
+                get_grad = np.vectorize(geometry.get_grad)
+                xy = get_xy(s)
+                grad = get_grad(s)
+                ref_line_xy[0].extend(s)
+                ref_line_xy[1].extend(xy[0])
+                ref_line_xy[2].extend(xy[1])
+                ref_line_xy[3].extend(grad[0])
+                ref_line_xy[4].extend(grad[1])
+
+                if isinstance(geometry, Arc):
                     pass
+            plt.plot(ref_line_xy[1], ref_line_xy[2], "b")
+            ref_line_xy = np.array(ref_line_xy)
+            for _, lane_section in road.lane_sections.items():
+                s = np.arange(lane_section.s, lane_section.s + lane_section.length, eps)
+                keys = list(road.offset.keys())
+                offset = [road.offset[keys[np.searchsorted(keys, s0, side="right") - 1]].get(s0) for s0 in s]
+                ref_line_section_xy = np.array(
+                    [ref_line_xy[1:, np.searchsorted(ref_line_xy[0], s0, side="right") - 1] for s0 in s]
+                )
+                for _, lane in lane_section.lanes.items():
+                    s = np.arange(0, lane_section.length, eps)
+                    keys = list(lane.widths.keys())
+                    if lane.id > 0:
+                        width = [
+                            offset[i] + lane.widths[keys[np.searchsorted(keys, s0, side="right") - 1]].get(s0)
+                            for i, s0 in enumerate(s)
+                        ]
+                    else:
+                        width = [
+                            offset[i] + lane.widths[keys[np.searchsorted(keys, s0, side="right") - 1]].negate().get(s0)
+                            for i, s0 in enumerate(s)
+                        ]
+                    xy = np.array(
+                        [
+                            (
+                                ref_line_section_xy[i, 0] - ref_line_section_xy[i, 3] * width[i],
+                                ref_line_section_xy[i, 1] + ref_line_section_xy[i, 2] * width[i],
+                            )
+                            for i, _ in enumerate(s)
+                        ]
+                    )
+                    plt.plot(xy[:, 0], xy[:, 1], "g")
         plt.show()
 
 
@@ -159,6 +202,9 @@ class RoadGeometry:
     def get_xy(self, s: float) -> Tuple[float, float]:
         raise NotImplementedError()
 
+    def get_grad(self, s: float) -> Tuple[float, float]:
+        raise NotImplementedError()
+
 
 class Arc(RoadGeometry):
     def __init__(self, s: float, x: float, y: float, hdg: float, length: float, curvature: float) -> None:
@@ -172,6 +218,12 @@ class Arc(RoadGeometry):
         ys = r * (np.sin(self.hdg + angle_at_s) + np.cos(self.hdg)) + self.y
         return (xs, ys)
 
+    def get_grad(self, s: float) -> Tuple[float, float]:
+        return (
+            np.sin((np.pi / 2) - self.curvature * (s - self.s) - self.hdg),
+            np.cos((np.pi / 2) - self.curvature * (s - self.s) - self.hdg),
+        )
+
 
 class Line(RoadGeometry):
     def __init__(self, s: float, x: float, y: float, hdg: float, length: float) -> None:
@@ -180,12 +232,16 @@ class Line(RoadGeometry):
     def get_xy(self, s: float) -> Tuple[float, float]:
         return (np.cos(self.hdg) * (s - self.s) + self.x, np.sin(self.hdg) * (s - self.s) + self.y)
 
+    def get_grad(self, s: float) -> Tuple[float, float]:
+        return (np.cos(self.hdg), np.sin(self.hdg))
+
 
 class LaneSection:
-    def __init__(self, s: float) -> None:
+    def __init__(self, s: float, length: float) -> None:
         self.s = s
         self.road: Road = None
         self.lanes: Dict[int, Lane] = {}  # from id to lane
+        self.length = length
 
 
 class Lane:
@@ -212,6 +268,10 @@ class Poly3:
 
     def get_grad(self, s: float):
         return self.b + 2 * self.c * s + 3 * self.d * s * s
+
+    def negate(self) -> "Poly3":
+        return Poly3(self.s, -self.a, -self.b, -self.c, -self.d)
+
 
 if __name__ == "__main__":
     open_drive_map = OpenDriveMap("OpenDriveMaps/map07.xodr")

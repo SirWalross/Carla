@@ -16,7 +16,7 @@ frame = 0
 throttle = 0.4
 steering = 0
 STEERING_MAX = 0.05
-crossing = [] # l, f, r
+crossing = []  # l, f, r
 
 
 def rgb_sensor(image):
@@ -70,15 +70,17 @@ def display_image(image):
         cY = int(M["m01"] / M["m00"])
         cv2.drawContours(raw_image, [contour], -1, (255, 0, 0), 1)
 
-        diff = cX - 1920/2 + 100
-        steering = np.clip(diff/400, -1, 1)
+        diff = cX - 1920 / 2 + 100
+        steering = np.clip(diff / 400, -1, 1)
         print(steering)
     else:
         pass
 
-    polygons = [[[0, 200], [400, 200], [400, 500], [0, 500]], 
-                [[1920, 200], [1520, 200], [1520, 500], [1920, 500]], 
-                [[910, 400], [910, 300], [1010, 300], [1010, 400]]]
+    polygons = [
+        [[0, 200], [400, 200], [400, 500], [0, 500]],
+        [[1920, 200], [1520, 200], [1520, 500], [1920, 500]],
+        [[910, 400], [910, 300], [1010, 300], [1010, 400]],
+    ]
 
     for i in range(3):
         # preparing the mask to overlay
@@ -110,7 +112,6 @@ def display_image(image):
         else:
             pass
 
-
     surface = pygame.surfarray.make_surface(raw_image.swapaxes(0, 1))
     screen.blit(surface, (0, 0))
 
@@ -123,8 +124,8 @@ def main(ip: str):
     try:
         client = carla.Client(ip, 2000)
         client.set_timeout(10.0)
-        world = client.load_world('Town07_Opt')
-        
+        world = client.load_world("Town07_Opt")
+
         map = world.get_map()
         blueprint_library = world.get_blueprint_library()
         spawn_points = map.get_spawn_points()
@@ -135,7 +136,7 @@ def main(ip: str):
             try:
                 spawn_point = spawn_points[0]
                 spawn_point.location = carla.Location(-2, -50, 1)
-                #spawn_point.location = world.get_random_location_from_navigation()
+                # spawn_point.location = world.get_random_location_from_navigation()
                 vehicle_bp = blueprint_library.find("vehicle.tesla.model3")
                 vehicle = world.spawn_actor(vehicle_bp, spawn_point)
                 break
@@ -151,7 +152,6 @@ def main(ip: str):
         camera_bp.set_attribute("fov", "150")
         # Set the time in seconds between sensor captures
         camera_bp.set_attribute("sensor_tick", "0.05")
-
 
         rgb_camera_bp = blueprint_library.find("sensor.camera.rgb")
         rgb_camera_bp.set_attribute("image_size_x", "1920")
