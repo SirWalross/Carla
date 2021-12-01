@@ -15,8 +15,10 @@ class Road:
         self.predecessor: Optional[RoadLink] = None
         self.successor: Optional[RoadLink] = None
         self.ref_line = RefLine(self.length)
+        self.elevation: Dict[float, Elevation] = {}
         self.lane_sections: Dict[float, LaneSection] = {}  # from s0 to lane section
         self.offset: Dict[float, Poly3] = {}  # from s to poly3
+        self.line: np.ndarray = None  # [s, x, y, dx, dy]
 
     def next_lane(self, lane: "Lane") -> Optional["Lane"]:
         assert lane.lane_section.road == self
@@ -34,6 +36,25 @@ class Road:
                 return lanes[index - 1]
             else:
                 return None
+
+    def interpolate(self, eps):
+        ref_line_xy = [[], [], [], [], []]  # s, x, y, dx, dy
+        for _, geometry in self.ref_line.geometries.items():
+            s = np.arange(geometry.s, geometry.s + geometry.length, eps)
+            get_xy = np.vectorize(geometry.get_xy)
+            get_grad = np.vectorize(geometry.get_grad)
+            xy = get_xy(s)
+            grad = get_grad(s)
+            ref_line_xy[0].extend(s)
+            ref_line_xy[1].extend(xy[0])
+            ref_line_xy[2].extend(xy[1])
+            ref_line_xy[3].extend(grad[0])
+            ref_line_xy[4].extend(grad[1])
+
+            if isinstance(geometry, Arc):
+                pass
+
+        self.line = np.array(ref_line_xy)
 
 
 class LaneLink:
@@ -61,6 +82,12 @@ class RefLine:
     def __init__(self, length: float) -> None:
         self.length = length
         self.geometries: Dict[float, RoadGeometry] = {}  # from s0 to road geometry
+
+
+class Elevation:
+    def __init__(self, length: float, elevation: "Poly3") -> None:
+        self.length = length
+        self.elevation = elevation
 
 
 class RoadLink:
@@ -121,6 +148,7 @@ class LaneSection:
         self.road: Road = None
         self.lanes: Dict[int, Lane] = {}  # from id to lane
         self.length = length
+        self.line: np.ndarray = None  # [x, y, dx, dy]
 
     def find_lanes(self, id: int) -> List["Lane"]:
         lanes: List[Lane] = []
@@ -130,6 +158,10 @@ class LaneSection:
                 lanes.append(lane)
 
         return lanes
+
+    def interpolate(self, eps):
+        s = np.arange(self.s, self.s + self.length, eps)
+        self.line = np.array([self.road.line[1:, np.searchsorted(self.road.line[0], s0, side="right") - 1] for s0 in s])
 
 
 class Lane:
@@ -143,16 +175,17 @@ class Lane:
         self.predecessor: int = -1
         self.successor: int = -1
         self.lane_section: LaneSection = None
-    
+        self.middle_line: np.ndarray = None  # [x, y]
+        self.outer_line: np.ndarray = None  # [x, y]
+
     def get_width(self, s: np.ndarray, middle_lane: bool = False) -> np.ndarray:
         width = np.zeros_like(s)
         if self.id > 0:
             for i, s0 in enumerate(s):
                 width[i] = sum(
                     [
-                        width[
-                            list(width.keys())[np.searchsorted(list(width.keys()), s0, side="right") - 1]
-                        ].get(s0) * (0.5 if middle_lane and (j == len(self.widths) - 1) else 1)
+                        width[list(width.keys())[np.searchsorted(list(width.keys()), s0, side="right") - 1]].get(s0)
+                        * (0.5 if middle_lane and (j == len(self.widths) - 1) else 1)
                         for j, width in enumerate(self.widths)
                     ]
                 )
@@ -162,11 +195,35 @@ class Lane:
                     [
                         width[list(width.keys())[np.searchsorted(list(width.keys()), s0, side="right") - 1]]
                         .negate()
-                        .get(s0) * (0.5 if middle_lane and (j == len(self.widths) - 1) else 1)
+                        .get(s0)
+                        * (0.5 if middle_lane and (j == len(self.widths) - 1) else 1)
                         for j, width in enumerate(self.widths)
                     ]
                 )
         return width
+
+    def interpolate(self, eps):
+        s = np.arange(0, self.lane_section.length, eps)
+        middle_line_width = self.get_width(s, middle_lane=True)
+        self.middle_line = np.array(
+            [
+                (
+                    self.lane_section.line[i, 0] - self.lane_section.line[i, 3] * middle_line_width[i],
+                    self.lane_section.line[i, 1] + self.lane_section.line[i, 2] * middle_line_width[i],
+                )
+                for i, _ in enumerate(s)
+            ]
+        )
+        outer_line_width = self.get_width(s, middle_lane=False)
+        self.outer_line = np.array(
+            [
+                (
+                    self.lane_section.line[i, 0] - self.lane_section.line[i, 3] * outer_line_width[i],
+                    self.lane_section.line[i, 1] + self.lane_section.line[i, 2] * outer_line_width[i],
+                )
+                for i, _ in enumerate(s)
+            ]
+        )
 
 
 class Poly3:
@@ -188,7 +245,16 @@ class Poly3:
 
 
 class OpenDriveMap:
-    def __init__(self, xodr_file: str):
+    def __init__(self, xodr_file: str, with_elevation: bool = False, eps: float = 0.1):
+        curr = time()
+        self.with_elevation = with_elevation
+
+        fig = plt.figure()
+        if with_elevation:
+            self.axis = fig.add_subplot(111, projection="3d")
+        else:
+            self.axis = fig.add_subplot(111)
+
         reverse = lambda l: l[::-1] if isinstance(l, list) else l
         self.possible_paths: List[List[Lane]] = []
 
@@ -227,6 +293,22 @@ class OpenDriveMap:
 
                 road.ref_line.geometries[s] = road_geometry
 
+            # parse elevation profile
+            if self.with_elevation:
+                for i, elevation_node in enumerate(road_node.elevationProfile.elevation):
+                    s = float(elevation_node["s"])
+                    a = float(elevation_node["a"])
+                    b = float(elevation_node["b"])
+                    c = float(elevation_node["c"])
+                    d = float(elevation_node["d"])
+
+                    if i != 0:
+                        old_elevation = road.elevation[list(road.elevation.keys())[-1]]
+                        old_elevation.length = s - old_elevation.elevation.s
+                    road.elevation[s] = Elevation(road.length - s, Poly3(s, a, b, c, d))
+            
+            road.interpolate(eps)
+
             # parse lane offsets
             for lane_offset_node in road_node.lanes.laneOffset:
                 s = float(lane_offset_node["s"])
@@ -247,6 +329,8 @@ class OpenDriveMap:
 
                 lane_section.road = road
                 road.lane_sections[s] = lane_section
+                
+                lane_section.interpolate(eps)
 
                 lane_nodes = []
                 try:
@@ -307,6 +391,9 @@ class OpenDriveMap:
                         lane.successor = int(lane_node.link.successor["id"])
                     except AttributeError:
                         pass
+                    
+                    lane.interpolate(eps)
+
             if all([not bool(lane_section.lanes) for _, lane_section in road.lane_sections.items()]):
                 continue
             self.roads.append(road)
@@ -334,60 +421,27 @@ class OpenDriveMap:
                 junction.connections[id] = connection
 
             self.junctions.append(junction)
+        
+        print(f"Parsing of map {xodr_file} took {time() - curr:.2f}s")
 
-    def _highlight_lanes(self, lanes: List[Lane], color="orange", eps: float = 0.1):
+    def _highlight_lanes(self, lanes: List[Lane], color="orange"):
         roads = [lane.lane_section.road for lane in lanes]
         # highlight lanes
         for road in roads:
-            ref_line_xy = [[], [], [], [], []]  # x, y, dx, dy
-            for _, geometry in road.ref_line.geometries.items():
-                s = np.arange(geometry.s, geometry.s + geometry.length, eps)
-                get_xy = np.vectorize(geometry.get_xy)
-                get_grad = np.vectorize(geometry.get_grad)
-                xy = get_xy(s)
-                grad = get_grad(s)
-                ref_line_xy[0].extend(s)
-                ref_line_xy[1].extend(xy[0])
-                ref_line_xy[2].extend(xy[1])
-                ref_line_xy[3].extend(grad[0])
-                ref_line_xy[4].extend(grad[1])
-
-                if isinstance(geometry, Arc):
-                    pass
-            ref_line_xy = np.array(ref_line_xy)
             for _, lane_section in road.lane_sections.items():
-                s = np.arange(lane_section.s, lane_section.s + lane_section.length, eps)
-                keys = list(road.offset.keys())
-                offset = [road.offset[keys[np.searchsorted(keys, s0, side="right") - 1]].get(s0) for s0 in s]
-                ref_line_section_xy = np.array(
-                    [ref_line_xy[1:, np.searchsorted(ref_line_xy[0], s0, side="right") - 1] for s0 in s]
-                )
                 for _, lane in lane_section.lanes.items():
                     if lane not in lanes:
                         continue
-                    s = np.arange(0, lane_section.length, eps)
-                    width = lane.get_width(s, middle_lane=True)
-                    xy = np.array(
-                        [
-                            (
-                                ref_line_section_xy[i, 0] - ref_line_section_xy[i, 3] * width[i],
-                                ref_line_section_xy[i, 1] + ref_line_section_xy[i, 2] * width[i],
-                            )
-                            for i, _ in enumerate(s)
-                        ]
-                    )
-                    plt.plot(xy[:, 0], xy[:, 1], c=color)
+                    self.axis.plot(lane.middle_line[:, 0], lane.middle_line[:, 1], c=color)
 
-    def find_route(self, road1: str, section1: int, lane1: int, road2: str, section2: int, lane2: int):
-        road1: Road = next(road for road in self.roads if road.name == road1)
-        section1: LaneSection = list(road1.lane_sections.values())[section1]
-        lane1: Lane = next(lane for lane in section1.lanes.values() if lane.id == lane1)
-        road2: Road = next(road for road in self.roads if road.name == road2)
-        section2: LaneSection = list(road2.lane_sections.values())[section2]
-        lane2: Lane = next(lane for lane in section2.lanes.values() if lane.id == lane2)
+    def find_route(self, start: Tuple[float, float], goal: Tuple[float, float]) -> List[Lane]:
+        curr = time()
+        lane1 = self._find_closest_lane(start)
+        lane2 = self._find_closest_lane(goal)
+        print(f"Search of lanes took {time() - curr:.2f}s")
 
         curr = time()
-        max_depth = 10
+        max_depth = 20
         while len(self.possible_paths) == 0:
             try:
                 self._dfs([], lane1, [lane1], lane2, max_depth=max_depth)
@@ -398,10 +452,15 @@ class OpenDriveMap:
         shortest_path = sorted(self.possible_paths, key=lambda path: sum([lane.lane_section.length for lane in path]))[
             0
         ]
-        print(f"Search for route took {time() - curr:.2f}s, with {len(self.possible_paths)} possible routes, shortest: {len(shortest_path)}")
+        print(
+            f"Search for route took {time() - curr:.2f}s, with {len(self.possible_paths)} possible routes, shortest:"
+            f" {len(shortest_path)}"
+        )
 
         self._highlight_lanes(shortest_path)
         self._highlight_lanes([lane1, lane2], color="black")
+
+        return shortest_path
 
     def _dfs(self, visited_lanes: List[Lane], current_lane: Lane, path: List[Lane], goal: Lane, max_depth: int = 40):
         if len(self.possible_paths) > 50000:
@@ -469,55 +528,34 @@ class OpenDriveMap:
     def _find_junction(self, junctionId: int) -> Junction:
         return next(junction for junction in self.junctions if junction.id == junctionId)
 
-    def render(self, eps: float = 0.1):
-        # plt.ion()
-        # plt.show()
+    def _find_closest_lane(self, location: Tuple[float, float]) -> Lane:
+        closest: Tuple[float, Lane] = (np.inf, None)
         for road in self.roads:
-            ref_line_xy = [[], [], [], [], []]  # x, y, dx, dy
-            for _, geometry in road.ref_line.geometries.items():
-                s = np.arange(geometry.s, geometry.s + geometry.length, eps)
-                get_xy = np.vectorize(geometry.get_xy)
-                get_grad = np.vectorize(geometry.get_grad)
-                xy = get_xy(s)
-                grad = get_grad(s)
-                ref_line_xy[0].extend(s)
-                ref_line_xy[1].extend(xy[0])
-                ref_line_xy[2].extend(xy[1])
-                ref_line_xy[3].extend(grad[0])
-                ref_line_xy[4].extend(grad[1])
-
-                if isinstance(geometry, Arc):
-                    pass
-            plt.plot(ref_line_xy[1], ref_line_xy[2], "b")
-            ref_line_xy = np.array(ref_line_xy)
             for _, lane_section in road.lane_sections.items():
-                s = np.arange(lane_section.s, lane_section.s + lane_section.length, eps)
-                keys = list(road.offset.keys())
-                offset = [road.offset[keys[np.searchsorted(keys, s0, side="right") - 1]].get(s0) for s0 in s]
-                ref_line_section_xy = np.array(
-                    [ref_line_xy[1:, np.searchsorted(ref_line_xy[0], s0, side="right") - 1] for s0 in s]
-                )
                 for _, lane in lane_section.lanes.items():
-                    s = np.arange(0, lane_section.length, eps)
-                    width = lane.get_width(s)
-                    xy = np.array(
-                        [
-                            (
-                                ref_line_section_xy[i, 0] - ref_line_section_xy[i, 3] * width[i],
-                                ref_line_section_xy[i, 1] + ref_line_section_xy[i, 2] * width[i],
-                            )
-                            for i, _ in enumerate(s)
-                        ]
-                    )
-                    plt.plot(xy[:, 0], xy[:, 1], "g")
+                    distance = np.linalg.norm(np.array(location) - lane.middle_line, axis=1)
+                    if np.min(distance) < closest[0]:
+                        closest = np.min(distance), lane
+
+        return closest[1]
+
+    def render(self):
+        for road in self.roads:
+            self.axis.plot(road.line[1, :], road.line[2, :], color="b")
+            for _, lane_section in road.lane_sections.items():
+                for _, lane in lane_section.lanes.items():
+                    self.axis.plot(lane.outer_line[:, 0], lane.outer_line[:, 1], color="g")
 
 
 if __name__ == "__main__":
+    with_elevation = False
+
     if len(sys.argv) > 1:
         plt.ion()
     plt.show()
-    open_drive_map = OpenDriveMap("OpenDriveMaps/map07.xodr")
+    open_drive_map = OpenDriveMap("OpenDriveMaps/map07.xodr", with_elevation=with_elevation, eps=0.1)
     open_drive_map.render()
-    open_drive_map.find_route("Road 57", 0, 1, "Road 60", 0, 1)
-    plt.axis('square')
+    open_drive_map.find_route((-205, -100), (250, 100))
+    if not with_elevation:
+        plt.axis("equal")
     plt.show()
