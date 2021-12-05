@@ -14,15 +14,32 @@ pygame.init()
 
 WIDTH = 1920
 HEIGHT = 720
-STEERING_OFFSET = 100 # in pixels
+STEERING_OFFSET = 100  # in pixels
+FOV = 130
+STEERING_MAX = 0.05
+DISTANCE_THRESHHOLD = (10, 10, 20)
 
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 
 frame = 0
 throttle = 0.4
 steering = 0
-STEERING_MAX = 0.05
 crossing = []  # l, f, r
+depth_buffer = None
+
+
+def depth_sensor(image):
+    global depth_buffer
+    array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
+    array = np.reshape(array, (image.height, image.width, 4))
+    array = array[:, :, :3]
+    depth_buffer = 1e9 * (array[:, :, 0] + array[:, :, 1] * 256 + array[:, :, 2] * 256 * 256) / (256 * 256 * 256 - 1)
+
+    # print(depth_buffer)
+
+    
+    # surface = pygame.surfarray.make_surface(depth_buffer.swapaxes(0, 1))
+    # screen.blit(surface, (0, 0))
 
 
 def rgb_sensor(image):
@@ -36,7 +53,7 @@ def rgb_sensor(image):
     # screen.blit(surface, (0, 0))
 
 
-def display_image(image):
+def semantic_sensor(image):
     global throttle
     global steering
     global lines
@@ -78,7 +95,7 @@ def display_image(image):
         cv2.drawContours(raw_image, [contour], -1, (255, 0, 0), 1)
 
         diff = cX - WIDTH / 2 + STEERING_OFFSET
-        steering = np.clip(diff / 200, -1, 1)
+        steering = np.clip(diff / 400, -1, 1)
         print(steering)
     else:
         pass
@@ -86,17 +103,15 @@ def display_image(image):
     polygons = [
         [[0, 200], [400, 200], [400, 500], [0, 500]],
         [[1920, 200], [1520, 200], [1520, 500], [1920, 500]],
-        [[910, 400], [910, 300], [1010, 300], [1010, 400]],
+        [[710, 400], [710, 300], [1110, 300], [1110, 400]],
     ]
 
     for i in range(3):
         # preparing the mask to overlay
-        mask_road_line = cv2.inRange(kreuzungen[i], np.array([156, 233, 49]), np.array([158, 235, 51]))
-        mask_road = cv2.inRange(kreuzungen[i], np.array([127, 63, 127]), np.array([129, 65, 129]))
-        mask = cv2.bitwise_or(mask_road_line, mask_road)
+        mask_road = cv2.inRange(kreuzungen[i], np.array([0, 0, 0]), np.array([0, 0, 0]))
 
         base_colour = np.full_like(kreuzungen[i], np.array([100, 100, 100]))
-        kreuzungen[i] = cv2.bitwise_and(base_colour, base_colour, mask=mask)
+        kreuzungen[i] = cv2.bitwise_and(base_colour, base_colour, mask=mask_road)
 
         # create a zero array
         stencil = np.zeros_like(kreuzungen[i][:, :, 0])
@@ -113,9 +128,17 @@ def display_image(image):
 
         contours, _ = cv2.findContours(kreuzungen[i].copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
 
-        if len(contours) > 0:
+        if len(contours) > 0 and depth_buffer is not None:
             contour = max(contours, key=cv2.contourArea)
-            cv2.drawContours(raw_image, [contour], -1, (255, 0, 0), 1)
+            mask = np.zeros_like(depth_buffer).astype("uint8")
+            cv2.drawContours(mask, [contour], -1, (255), 1)
+            distance = cv2.bitwise_and(depth_buffer, depth_buffer, mask=mask)
+            # print(distance)
+            distance[np.where((distance==0).all(axis=1))] = 255
+            # print(distance)
+            if np.min(distance) <= DISTANCE_THRESHHOLD[i]:
+                cv2.drawContours(raw_image, [contour], -1, (255, 0, 0), 1)
+                cv2.putText(raw_image, f"{np.min(distance):.5f}", contour[0][0], cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 1)
         else:
             pass
 
@@ -128,24 +151,27 @@ def main(ip: str):
     try:
         client = carla.Client(ip, 2000)
         client.set_timeout(10.0)
-        with open("OpenDriveMaps/map07.xodr", encoding='utf-8') as od_file:
+        with open("OpenDriveMaps/map07.xodr", encoding="utf-8") as od_file:
             try:
                 data = od_file.read()
             except OSError:
-                print('file could not be readed.')
+                print("file could not be readed.")
                 sys.exit()
         vertex_distance = 2.0  # in meters
-        max_road_length = 500.0 # in meters
-        wall_height = 0.0      # in meters
-        extra_width = 0.6      # in meters
+        max_road_length = 500.0  # in meters
+        wall_height = 0.0  # in meters
+        extra_width = 0.6  # in meters
         world = client.generate_opendrive_world(
-            data, carla.OpendriveGenerationParameters(
+            data,
+            carla.OpendriveGenerationParameters(
                 vertex_distance=vertex_distance,
                 max_road_length=max_road_length,
                 wall_height=wall_height,
                 additional_width=extra_width,
                 smooth_junctions=True,
-                enable_mesh_visibility=True))
+                enable_mesh_visibility=True,
+            ),
+        )
 
         map = world.get_map()
         blueprint_library = world.get_blueprint_library()
@@ -163,27 +189,32 @@ def main(ip: str):
                 continue
         print("Spawned vehicle")
 
-        camera_bp = blueprint_library.find("sensor.camera.semantic_segmentation")
+        relative_transform = carla.Transform(carla.Location(x=2.5, y=0, z=1.7), carla.Rotation(yaw=0))
 
-        # Modify the attributes of the blueprint to set image resolution and field of view.
-        camera_bp.set_attribute("image_size_x", "1920")
-        camera_bp.set_attribute("image_size_y", "720")
-        camera_bp.set_attribute("fov", "150")
-        # Set the time in seconds between sensor captures
+        camera_bp = blueprint_library.find("sensor.camera.semantic_segmentation")
+        camera_bp.set_attribute("image_size_x", f"{WIDTH}")
+        camera_bp.set_attribute("image_size_y", f"{HEIGHT}")
+        camera_bp.set_attribute("fov", f"{FOV}")
         camera_bp.set_attribute("sensor_tick", "0.05")
+        camera = world.spawn_actor(camera_bp, relative_transform, vehicle)
+        camera.listen(semantic_sensor)
 
         rgb_camera_bp = blueprint_library.find("sensor.camera.rgb")
-        rgb_camera_bp.set_attribute("image_size_x", "1920")
-        rgb_camera_bp.set_attribute("image_size_y", "720")
-        rgb_camera_bp.set_attribute("fov", "150")
+        rgb_camera_bp.set_attribute("image_size_x", f"{WIDTH}")
+        rgb_camera_bp.set_attribute("image_size_y", f"{HEIGHT}")
+        rgb_camera_bp.set_attribute("fov", f"{FOV}")
         rgb_camera_bp.set_attribute("sensor_tick", "0.02")
-        relative_transform = carla.Transform(carla.Location(x=2.5, y=0, z=1.7), carla.Rotation(yaw=0))
         rgb_camera = world.spawn_actor(rgb_camera_bp, relative_transform, vehicle)
         rgb_camera.listen(rgb_sensor)
 
-        relative_transform = carla.Transform(carla.Location(x=2.5, y=0, z=1.7), carla.Rotation(yaw=0))
-        camera = world.spawn_actor(camera_bp, relative_transform, vehicle)
-        camera.listen(display_image)
+        rgb_camera_bp = blueprint_library.find("sensor.camera.depth")
+        rgb_camera_bp.set_attribute("image_size_x", f"{WIDTH}")
+        rgb_camera_bp.set_attribute("image_size_y", f"{HEIGHT}")
+        rgb_camera_bp.set_attribute("fov", f"{FOV}")
+        rgb_camera_bp.set_attribute("sensor_tick", "0.02")
+        rgb_camera = world.spawn_actor(rgb_camera_bp, relative_transform, vehicle)
+        rgb_camera.listen(depth_sensor)
+
         while 1:
             control = carla.VehicleControl(
                 throttle=throttle, steer=steering, brake=0.0, hand_brake=False, reverse=False, manual_gear_shift=False
