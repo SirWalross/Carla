@@ -6,6 +6,7 @@ import pygame
 from pygame.locals import *
 import cv2
 import sys
+from pid import PID
 
 import carla
 from carla import ColorConverter as cc
@@ -26,6 +27,7 @@ throttle = 0.4
 steering = 0
 crossing = []  # l, f, r
 depth_buffer = None
+pid = PID(0.5, 0, 0.1)
 
 
 def depth_sensor(image):
@@ -95,7 +97,7 @@ def semantic_sensor(image):
         cv2.drawContours(raw_image, [contour], -1, (255, 0, 0), 1)
 
         diff = cX - WIDTH / 2 + STEERING_OFFSET
-        steering = np.clip(diff / 400, -1, 1)
+        steering = pid(diff / 400, 0)
         print(steering)
     else:
         pass
@@ -151,7 +153,7 @@ def main(ip: str):
     try:
         client = carla.Client(ip, 2000)
         client.set_timeout(10.0)
-        with open("OpenDriveMaps/map07.xodr", encoding="utf-8") as od_file:
+        with open("OpenDriveMaps/map02.xodr", encoding="utf-8") as od_file:
             try:
                 data = od_file.read()
             except OSError:

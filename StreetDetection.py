@@ -5,6 +5,7 @@ import numpy as np
 import pygame
 from pygame.locals import *
 import cv2
+from pid import PID
 
 import carla
 from carla import ColorConverter as cc
@@ -17,6 +18,7 @@ throttle = 0.4
 steering = 0
 STEERING_MAX = 0.05
 crossing = []  # l, f, r
+pid = PID(0.5, 0, 0.2)
 
 
 def rgb_sensor(image):
@@ -71,7 +73,7 @@ def display_image(image):
         cv2.drawContours(raw_image, [contour], -1, (255, 0, 0), 1)
 
         diff = cX - 1920 / 2 + 100
-        steering = np.clip(diff / 400, -1, 1)
+        steering = pid(diff / 400, 0)
         print(steering)
     else:
         pass
