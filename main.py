@@ -7,6 +7,7 @@ import carla
 import cv2
 import pygame
 from pygame.locals import *
+from trafficsign import TrafficSignType, detect_traffic_sign, load_model
 
 from carla import ColorConverter as cc
 
@@ -153,15 +154,12 @@ def rgb_sensor(image):
     if traffic_sign is not None:
         area = cv2.contourArea(traffic_sign)
 
-        mask = np.zeros_like(array[:, :, 0])
-        cv2.drawContours(mask, [traffic_sign], -1, (255, 255, 255), -1)
-        image = cv2.bitwise_and(array, array, mask=mask)
-
-        # TODO: use image to read traffic sign
+        x, y, w, h = cv2.boundingRect(traffic_sign)
+        prediction = detect_traffic_sign(array[y:y+h, x:x+w])
 
         point = (max(traffic_sign[:, 0, 0]), min(traffic_sign[:, 0, 1]))
         cv2.drawContours(array, [traffic_sign], -1, (255, 0, 0), 1)
-        cv2.putText(array, f"30,{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 1)
+        cv2.putText(array, f"{prediction.name},{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 1)
 
     surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
     screen.blit(surface, (0, 0))
@@ -194,6 +192,7 @@ def segmentation_sensor(image):
     else:
         traffic_light = None
 
+    # TODO: @henry
     # Traffic sign
     traffic_image = np.copy(array)
     # preparing the mask to overlay
@@ -314,10 +313,13 @@ def visualize_path():
 
 def main(ip: str):
     global waypoint, waypoint_deadzone, lidar, world, vehicle
+    
+    load_model()
+
     try:
         client = carla.Client(ip, 2000)
         client.set_timeout(10.0)
-        world = client.load_world("Town07")
+        world = client.load_world("Town02")
         # world = client.get_world()
         # world.unload_map_layer(carla.MapLayer.Buildings)
         # world.unload_map_layer(carla.MapLayer.Decals)

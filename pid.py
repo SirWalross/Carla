@@ -35,7 +35,7 @@ class PID(object):
 
         self._derivative = self.Kd * d_input / dt
 
-        print(self._derivative)
+        #print(self._derivative)
 
         # Compute final output
         output = self._proportional + self._integral + self._derivative

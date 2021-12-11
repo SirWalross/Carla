@@ -51,8 +51,8 @@ def rgb_sensor(image):
     array = np.reshape(array, (image.height, image.width, 4))
     array = array[:, :, :3]
 
-    # surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
-    # screen.blit(surface, (0, 0))
+    surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
+    screen.blit(surface, (0, 0))
 
 
 def semantic_sensor(image):
@@ -144,8 +144,8 @@ def semantic_sensor(image):
         else:
             pass
 
-    surface = pygame.surfarray.make_surface(raw_image.swapaxes(0, 1))
-    screen.blit(surface, (0, 0))
+    # surface = pygame.surfarray.make_surface(raw_image.swapaxes(0, 1))
+    # screen.blit(surface, (0, 0))
     # frame += 1
 
 
@@ -153,7 +153,7 @@ def main(ip: str):
     try:
         client = carla.Client(ip, 2000)
         client.set_timeout(10.0)
-        with open("OpenDriveMaps/map02.xodr", encoding="utf-8") as od_file:
+        with open("map.xodr", encoding="utf-8") as od_file:
             try:
                 data = od_file.read()
             except OSError:
@@ -218,10 +218,8 @@ def main(ip: str):
         rgb_camera.listen(depth_sensor)
 
         while 1:
-            control = carla.VehicleControl(
-                throttle=throttle, steer=steering, brake=0.0, hand_brake=False, reverse=False, manual_gear_shift=False
-            )
-            vehicle.apply_control(control)
+            vehicle.set_autopilot()
+            # vehicle.apply_control(control)
             pygame.display.flip()
             pygame.display.update()
             time.sleep(0.05)

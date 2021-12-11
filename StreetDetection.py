@@ -17,8 +17,11 @@ frame = 0
 throttle = 0.4
 steering = 0
 STEERING_MAX = 0.05
+TRAFFIC_LIGHT_SENSITIVITY = 0.35
 crossing = []  # l, f, r
-pid = PID(0.5, 0, 0.2)
+pid = PID(1.3, 0, 0.2)
+traffic_light = None
+detected_red_traffic_light = False
 
 
 def rgb_sensor(image):
@@ -27,20 +30,48 @@ def rgb_sensor(image):
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
     array = np.reshape(array, (image.height, image.width, 4))
     array = array[:, :, :3]
+    array = np.array(array[:, :, ::-1])
+
+    if traffic_light is not None:
+        area = cv2.contourArea(traffic_light)
+
+        mask = np.zeros_like(array[:, :, 0])
+        cv2.drawContours(mask, [traffic_light], -1, (255, 255, 255), -1)
+        image = cv2.bitwise_and(array, array, mask=mask)
+
+        # average red color in image
+        average_colours = np.array([np.average(image[:, :, 0]), np.average(image[:, :, 1]), np.average(image[:, :, 2])])
+        average_colours = average_colours / np.sum(average_colours)
+
+        point = (max(traffic_light[:, 0, 0]), min(traffic_light[:, 0, 1]))
+        print(f"{average_colours[0]}, {area}")
+        if average_colours[0] > TRAFFIC_LIGHT_SENSITIVITY:
+            cv2.drawContours(array, [traffic_light], -1, (255, 0, 0), 1)
+            cv2.putText(array, f"{average_colours[0]:.2f},{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 1)
+        else:
+            cv2.drawContours(array, [traffic_light], -1, (0, 255, 0), 1)
+            cv2.putText(array, f"{average_colours[0]:.2f},{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 1)
+
+        if area > 40 and average_colours[0] > TRAFFIC_LIGHT_SENSITIVITY and steering <= 0.1:
+            detected_red_traffic_light = True
+        else:
+            detected_red_traffic_light = False
+    else:
+        detected_red_traffic_light = False
+        
+
+    surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
+    screen.blit(surface, (0, 0))
 
 
 def display_image(image):
-    global throttle
-    global steering
-    global lines
-    global frame
+    global throttle, steering, lines, frame, traffic_light
     image.convert(cc.CityScapesPalette)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
     array = np.reshape(array, (image.height, image.width, 4))
     array = array[:, :, :3]
     array = array[:, :, ::-1]
     raw_image = np.copy(array)
-    kreuzungen = [np.copy(array), np.copy(array), np.copy(array)]
 
     # preparing the mask to overlay
     mask_road_line = cv2.inRange(array, np.array([156, 233, 49]), np.array([158, 235, 51]))
@@ -74,48 +105,67 @@ def display_image(image):
 
         diff = cX - 1920 / 2 + 100
         steering = pid(diff / 400, 0)
-        print(steering)
     else:
         pass
 
-    polygons = [
-        [[0, 200], [400, 200], [400, 500], [0, 500]],
-        [[1920, 200], [1520, 200], [1520, 500], [1920, 500]],
-        [[910, 400], [910, 300], [1010, 300], [1010, 400]],
-    ]
+    # Traffic light
+    traffic_image = np.copy(raw_image)
+    # preparing the mask to overlay
+    mask = cv2.inRange(traffic_image, np.array([249, 169, 29]), np.array([251, 171, 31]))
 
-    for i in range(3):
-        # preparing the mask to overlay
-        mask_road_line = cv2.inRange(kreuzungen[i], np.array([156, 233, 49]), np.array([158, 235, 51]))
-        mask_road = cv2.inRange(kreuzungen[i], np.array([127, 63, 127]), np.array([129, 65, 129]))
-        mask = cv2.bitwise_or(mask_road_line, mask_road)
+    base_colour = np.full_like(traffic_image, np.array([255, 255, 255]))
+    traffic_image = cv2.bitwise_and(base_colour, base_colour, mask=mask)
 
-        base_colour = np.full_like(kreuzungen[i], np.array([100, 100, 100]))
-        kreuzungen[i] = cv2.bitwise_and(base_colour, base_colour, mask=mask)
+    # create a zero array
+    stencil = np.zeros_like(traffic_image[:, :, 0])
 
-        # create a zero array
-        stencil = np.zeros_like(kreuzungen[i][:, :, 0])
+    # specify coordinates of the polygon
+    polygon = np.array([[930, 0], [930, 360], [990, 360], [990, 0]])
+    cv2.fillConvexPoly(stencil, polygon, 255)
 
-        # specify coordinates of the polygon
-        polygon = np.array(polygons[i])
+    # convert image to greyscale
+    traffic_image = cv2.bitwise_and(traffic_image, traffic_image, mask=stencil)
+    traffic_image = cv2.cvtColor(traffic_image, cv2.COLOR_BGR2GRAY)
 
-        # fill polygon with ones
-        cv2.fillConvexPoly(stencil, polygon, 255)
+    # contour detection
+    contours, _ = cv2.findContours(traffic_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
 
-        # apply stencil
-        kreuzungen[i] = cv2.bitwise_and(kreuzungen[i], kreuzungen[i], mask=stencil)
-        kreuzungen[i] = cv2.cvtColor(kreuzungen[i], cv2.COLOR_BGR2GRAY)
+    if len(contours) > 0:
+        traffic_light = max(contours, key=cv2.contourArea)
+        cv2.drawContours(raw_image, [traffic_light], -1, (255, 0, 0), 1)
+    else:
+        traffic_light = None
 
-        contours, _ = cv2.findContours(kreuzungen[i].copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
 
-        if len(contours) > 0:
-            contour = max(contours, key=cv2.contourArea)
-            cv2.drawContours(raw_image, [contour], -1, (255, 0, 0), 1)
-        else:
-            pass
+    # Signs #############################################################################################
+    sign_image = np.copy(raw_image)
+    # preparing the mask to overlay
+    mask = cv2.inRange(traffic_image, np.array([249, 169, 29]), np.array([251, 171, 31]))
 
-    surface = pygame.surfarray.make_surface(raw_image.swapaxes(0, 1))
-    screen.blit(surface, (0, 0))
+    base_colour = np.full_like(traffic_image, np.array([255, 255, 255]))
+    traffic_image = cv2.bitwise_and(base_colour, base_colour, mask=mask)
+
+    # create a zero array
+    stencil = np.zeros_like(traffic_image[:, :, 0])
+
+    # specify coordinates of the polygon
+    polygon = np.array([[930, 0], [930, 360], [990, 360], [990, 0]])
+    cv2.fillConvexPoly(stencil, polygon, 255)
+
+    # convert image to greyscale
+    traffic_image = cv2.bitwise_and(traffic_image, traffic_image, mask=stencil)
+    traffic_image = cv2.cvtColor(traffic_image, cv2.COLOR_BGR2GRAY)
+
+    # contour detection
+    contours, _ = cv2.findContours(traffic_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+
+    if len(contours) > 0:
+        traffic_light = max(contours, key=cv2.contourArea)
+        cv2.drawContours(raw_image, [traffic_light], -1, (255, 0, 0), 1)
+    else:
+        traffic_light = None
+
+
 
     # surface = pygame.surfarray.make_surface(raw_image.swapaxes(0, 1))
     # screen.blit(surface, (0, 0))
@@ -127,6 +177,12 @@ def main(ip: str):
         client = carla.Client(ip, 2000)
         client.set_timeout(10.0)
         world = client.load_world("Town07_Opt")
+        
+        # Settings
+        # settings = world.get_settings()
+        # settings.synchronous_mode = True  # Enables synchronous mode
+        # settings.fixed_delta_seconds = 0.5
+        # world.apply_settings(settings)
 
         map = world.get_map()
         blueprint_library = world.get_blueprint_library()
@@ -137,7 +193,8 @@ def main(ip: str):
         while True:
             try:
                 spawn_point = spawn_points[0]
-                spawn_point.location = carla.Location(-2, -50, 1)
+                spawn_point.location = carla.Location(50, -2, 1)
+                spawn_point.rotation.yaw -= 90
                 # spawn_point.location = world.get_random_location_from_navigation()
                 vehicle_bp = blueprint_library.find("vehicle.tesla.model3")
                 vehicle = world.spawn_actor(vehicle_bp, spawn_point)
@@ -168,13 +225,19 @@ def main(ip: str):
         camera = world.spawn_actor(camera_bp, relative_transform, vehicle)
         camera.listen(display_image)
         while 1:
-            control = carla.VehicleControl(
-                throttle=throttle, steer=steering, brake=0.0, hand_brake=False, reverse=False, manual_gear_shift=False
-            )
+            if detected_red_traffic_light:
+                control = carla.VehicleControl(
+                    throttle=0, steer=steering, brake=1.0, hand_brake=False, reverse=False, manual_gear_shift=False
+                )
+            else:   
+                control = carla.VehicleControl(
+                    throttle=throttle, steer=steering, brake=0.0, hand_brake=False, reverse=False, manual_gear_shift=False
+                )
             vehicle.apply_control(control)
             pygame.display.flip()
             pygame.display.update()
-            time.sleep(0.05)
+            # world.tick()
+            time.sleep(0.01)
     finally:
         try:
             vehicle.destroy()
