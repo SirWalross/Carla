@@ -11,8 +11,11 @@ from trafficsign import TrafficSignType, detect_traffic_sign, load_model
 
 from carla import ColorConverter as cc
 
+WIDTH = 1280
+HEIGHT = 720
+
 pygame.init()
-screen = pygame.display.set_mode((1280, 720))
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
 
 world = None
 vehicle = None
@@ -155,7 +158,9 @@ def rgb_sensor(image):
         area = cv2.contourArea(traffic_sign)
 
         x, y, w, h = cv2.boundingRect(traffic_sign)
+        print("found traffic sign")
         prediction = detect_traffic_sign(array[y:y+h, x:x+w])
+        print(prediction.name)
 
         point = (max(traffic_sign[:, 0, 0]), min(traffic_sign[:, 0, 1]))
         cv2.drawContours(array, [traffic_sign], -1, (255, 0, 0), 1)
@@ -192,7 +197,7 @@ def segmentation_sensor(image):
     else:
         traffic_light = None
 
-    # TODO: @henry
+
     # Traffic sign
     traffic_image = np.copy(array)
     # preparing the mask to overlay
@@ -201,7 +206,15 @@ def segmentation_sensor(image):
     base_colour = np.full_like(traffic_image, np.array([255, 255, 255]))
     traffic_image = cv2.bitwise_and(base_colour, base_colour, mask=mask)
 
+    # create a zero array
+    stencil = np.zeros_like(traffic_image[:, :, 0])
+
+    # specify coordinates of the polygon
+    polygon = np.array([[int(2*WIDTH/3), 200], [int(2*WIDTH/3), HEIGHT], [WIDTH, HEIGHT], [WIDTH, 200]])
+    cv2.fillConvexPoly(stencil, polygon, 255)
+
     # convert image to greyscale
+    traffic_image = cv2.bitwise_and(traffic_image, traffic_image, mask=stencil)
     traffic_image = cv2.cvtColor(traffic_image, cv2.COLOR_BGR2GRAY)
 
     # contour detection
@@ -209,8 +222,12 @@ def segmentation_sensor(image):
 
     if len(contours) > 0:
         traffic_sign = max(contours, key=cv2.contourArea)
+        print("detected traffic sign")
+        # cv2.drawContours(traffic_image, [traffic_sign], -1, (255, 0, 0), 1)
     else:
         traffic_sign = None
+
+
 
 
 def gnss_sensor(sensor_data):
@@ -265,8 +282,8 @@ def vehicle_control(waypoint_transform, vehicle_transform, target_speed) -> Tupl
         throttle = 0
         brake = np.clip(-speed_delta * K_P_T, 0, 1.0)
 
-    if detected_red_traffic_light:
-        return 0.0, steering, 1.0
+    # if detected_red_traffic_light:
+    #     return 0.0, steering, 1.0
     return throttle, steering, brake
 
 
@@ -397,7 +414,7 @@ def main(ip: str):
         lidar_bp.set_attribute("points_per_second", "100000.0")
         lidar_bp.set_attribute("rotation_frequency", "10")
         lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
-        lidar.listen(lidar_sensor)
+        # lidar.listen(lidar_sensor)
 
         waypoint = map.get_waypoint(vehicle.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
         vehicle.set_transform(waypoint.transform)
@@ -408,7 +425,7 @@ def main(ip: str):
             )
             vehicle.apply_control(control)
 
-            visualize_path()
+            # visualize_path()
 
             pygame.display.flip()
             pygame.display.update()

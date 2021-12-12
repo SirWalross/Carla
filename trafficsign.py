@@ -7,7 +7,7 @@ model: keras.Model = None
 
 def load_model():
     global model
-    model = keras.models.load_model('bestW')
+    model = keras.models.load_model('traffic_sign.h5')
 
 class TrafficSignType(Enum):
     SPEED_30_SIGN = 1
