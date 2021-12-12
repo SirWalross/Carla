@@ -2,3 +2,4 @@ opendrive.xml
 __pycache__
 .vscode/settings.json
 image_detection.py
+images/*

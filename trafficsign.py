@@ -3,7 +3,12 @@ import tensorflow as tf
 from tensorflow import keras
 from enum import Enum
 
+from tensorflow.python.types.core import Value
+import cv2
+
 model: keras.Model = None
+counter = 0
+
 
 def load_model():
     global model
@@ -21,8 +26,15 @@ class TrafficSignType(Enum):
     # PRIORITY_SIGN = 12
     YIELD_SIGN = 13
     STOP_SIGN = 14
+    INVALID_SIGN = 44
 
 def detect_traffic_sign(image: np.ndarray) -> TrafficSignType:
+    global counter
     image = tf.image.resize(image, (48, 48)) / 255.0
-    traffic_sign = np.argmax(model.predict(image))
-    return TrafficSignType(traffic_sign)
+    cv2.imwrite(f"images/traffic{counter}.png", image.numpy()[:, :, ::-1] * 255)
+    counter += 1
+    traffic_sign = np.argmax(model.predict(image.numpy()[None, :, :, ::-1]))
+    try:
+        return TrafficSignType(traffic_sign)
+    except ValueError:
+        return TrafficSignType.INVALID_SIGN

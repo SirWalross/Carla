@@ -14,6 +14,8 @@ from carla import ColorConverter as cc
 WIDTH = 1280
 HEIGHT = 720
 
+BORDER = 0.1 # 10% border around image
+
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 
@@ -67,16 +69,14 @@ class LidarData:
             r2 = r + (ROAD_WIDTH / 2) * (0.8 + throttle * 0.2)
             return np.logical_and.reduce(
                 np.logical_or.reduce((tags == 4, tags == 10)),
-                points[:, 0] > 1, 
+                points[:, 0] > 1,
                 np.linalg.norm(points[:, :2], axis=1) >= r1,
                 np.linalg.norm(points[:, :2], axis=1) <= r2,
             )
 
     @staticmethod
     def _convert_to_point_cloud(lidar_data):
-        dtype = np.dtype(
-            [("position", np.float32, (3,)), ("cos_angle", np.float32), ("object_index", np.uint32), ("tag", np.uint32)]
-        )
+        dtype = np.dtype([("position", np.float32, (3,)), ("cos_angle", np.float32), ("object_index", np.uint32), ("tag", np.uint32)])
         p_cloud = np.frombuffer(lidar_data.raw_data, dtype=dtype)
         tags = p_cloud["tag"]
         positions = np.array(p_cloud["position"])
@@ -107,14 +107,10 @@ def lidar_sensor(lidar_data):
             dist_new, point = lidar_data.query_object_index(object_index)
             dist_old, _ = last_lidar_data.query_object_index(object_index)
             if dist_old != np.inf and dist_new != np.inf:
-                obstacles.append(
-                    (dist_new, (dist_new - dist_old) / (lidar_data.timestamp - last_lidar_data.timestamp), point)
-                )
+                obstacles.append((dist_new, (dist_new - dist_old) / (lidar_data.timestamp - last_lidar_data.timestamp), point))
         obstacles.sort(key=lambda obstacle: obstacle[0])
     if len(obstacles) > 0:
-        world.debug.draw_point(
-            waypoint.transform.location(*obstacles[0][2]), size=0.1, color=carla.Color(255, 0, 0), life_time=0.1
-        )
+        world.debug.draw_point(waypoint.transform.location(*obstacles[0][2]), size=0.1, color=carla.Color(255, 0, 0), life_time=0.1)
     last_lidar_data = lidar_data
 
 
@@ -127,6 +123,7 @@ def rgb_sensor(image):
 
     # convert from rgb to bgr
     array = np.array(array[:, :, ::-1])
+    raw_image = np.copy(array)
 
     if traffic_light is not None:
         area = cv2.contourArea(traffic_light)
@@ -158,9 +155,11 @@ def rgb_sensor(image):
         area = cv2.contourArea(traffic_sign)
 
         x, y, w, h = cv2.boundingRect(traffic_sign)
-        print("found traffic sign")
-        prediction = detect_traffic_sign(array[y:y+h, x:x+w])
-        print(prediction.name)
+        x1 = int(np.clip(x - w * BORDER, 0, WIDTH))
+        x2 = int(np.clip(x + w * (1 + BORDER), 0, WIDTH))
+        y1 = int(np.clip(y - h * BORDER, 0, HEIGHT))
+        y2 = int(np.clip(y + h * (1 + BORDER), 0, HEIGHT))
+        prediction = detect_traffic_sign(raw_image[y1:y2, x1:x2, :])
 
         point = (max(traffic_sign[:, 0, 0]), min(traffic_sign[:, 0, 1]))
         cv2.drawContours(array, [traffic_sign], -1, (255, 0, 0), 1)
@@ -197,7 +196,6 @@ def segmentation_sensor(image):
     else:
         traffic_light = None
 
-
     # Traffic sign
     traffic_image = np.copy(array)
     # preparing the mask to overlay
@@ -210,7 +208,7 @@ def segmentation_sensor(image):
     stencil = np.zeros_like(traffic_image[:, :, 0])
 
     # specify coordinates of the polygon
-    polygon = np.array([[int(2*WIDTH/3), 200], [int(2*WIDTH/3), HEIGHT], [WIDTH, HEIGHT], [WIDTH, 200]])
+    polygon = np.array([[int(WIDTH / 2), 200], [int(WIDTH / 2), HEIGHT], [WIDTH, HEIGHT], [WIDTH, 200]])
     cv2.fillConvexPoly(stencil, polygon, 255)
 
     # convert image to greyscale
@@ -222,12 +220,9 @@ def segmentation_sensor(image):
 
     if len(contours) > 0:
         traffic_sign = max(contours, key=cv2.contourArea)
-        print("detected traffic sign")
         # cv2.drawContours(traffic_image, [traffic_sign], -1, (255, 0, 0), 1)
     else:
         traffic_sign = None
-
-
 
 
 def gnss_sensor(sensor_data):
@@ -330,7 +325,7 @@ def visualize_path():
 
 def main(ip: str):
     global waypoint, waypoint_deadzone, lidar, world, vehicle
-    
+
     load_model()
 
     try:
@@ -386,43 +381,28 @@ def main(ip: str):
         segmentation = world.spawn_actor(segmentation_bp, relative_transform, vehicle)
         segmentation.listen(segmentation_sensor)
 
-        # Lidar sensor
-        lidar_bp = blueprint_library.find("sensor.lidar.ray_cast")
-        lidar_bp.set_attribute("dropoff_general_rate", "0.0")
-        lidar_bp.set_attribute("dropoff_intensity_limit", "1.0")
-        lidar_bp.set_attribute("dropoff_zero_intensity", "0.0")
-        lidar_bp.set_attribute("upper_fov", "30.0")
-        lidar_bp.set_attribute("lower_fov", "-25.0")
-        lidar_bp.set_attribute("channels", "64.0")
-        lidar_bp.set_attribute("range", "100.0")
-        lidar_bp.set_attribute("points_per_second", "100000.0")
-        lidar = world.spawn_actor(lidar_bp, relative_transform, vehicle)
-        lidar.listen(lidar_sensor)
-
         # GNSS sensor
         gnss = blueprint_library.find("sensor.other.gnss")
         gnss = world.spawn_actor(gnss, carla.Transform(), vehicle)
         gnss.listen(gnss_sensor)
 
         # Lidar sensor
-        lidar_transform = carla.Transform(carla.Location(z=1.9))
-        lidar_bp = blueprint_library.find("sensor.lidar.ray_cast_semantic")
-        lidar_bp.set_attribute("upper_fov", "30.0")
-        lidar_bp.set_attribute("lower_fov", "-25.0")
-        lidar_bp.set_attribute("channels", "64.0")
-        lidar_bp.set_attribute("range", str(LIDAR_DISTANCE))
-        lidar_bp.set_attribute("points_per_second", "100000.0")
-        lidar_bp.set_attribute("rotation_frequency", "10")
-        lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
+        # lidar_transform = carla.Transform(carla.Location(z=1.9))
+        # lidar_bp = blueprint_library.find("sensor.lidar.ray_cast_semantic")
+        # lidar_bp.set_attribute("upper_fov", "30.0")
+        # lidar_bp.set_attribute("lower_fov", "-25.0")
+        # lidar_bp.set_attribute("channels", "64.0")
+        # lidar_bp.set_attribute("range", str(LIDAR_DISTANCE))
+        # lidar_bp.set_attribute("points_per_second", "100000.0")
+        # lidar_bp.set_attribute("rotation_frequency", "10")
+        # lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
         # lidar.listen(lidar_sensor)
 
         waypoint = map.get_waypoint(vehicle.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
         vehicle.set_transform(waypoint.transform)
         while 1:
             throttle, steering, brake = vehicle_control(waypoint.transform, vehicle.get_transform(), 10)
-            control = carla.VehicleControl(
-                throttle=throttle, steer=steering, brake=brake, hand_brake=False, reverse=False, manual_gear_shift=False
-            )
+            control = carla.VehicleControl(throttle=throttle, steer=steering, brake=brake, hand_brake=False, reverse=False, manual_gear_shift=False)
             vehicle.apply_control(control)
 
             # visualize_path()
