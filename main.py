@@ -7,14 +7,23 @@ import carla
 import cv2
 import pygame
 from pygame.locals import *
-from trafficsign import TrafficSignType, detect_traffic_sign, load_model
 
 from carla import ColorConverter as cc
 
+from pid import PID
+
+random.seed(42)
+
+
+# CONSTANTS
 WIDTH = 1280
 HEIGHT = 720
-
-BORDER = 0.1 # 10% border around image
+ROAD_WIDTH = 3.0
+TRAFFIC_LIGHT_SENSITIVITY = 0.4
+LIDAR_DISTANCE = 50.0
+ROAD_OFFSET = 60
+BORDER = 0.1  # 10% border around image
+TRAFFIC_SIGN_DETECTION_RANGE = (0, 1000)  # min and max area of sign
 
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -24,29 +33,30 @@ vehicle = None
 
 current_speed = 0.0  # m/s
 prev_sensor_data = None
-steering_delta = 0
 steering = 0
-speed_delta = 0
 throttle = 0
 brake = 0
 distance_waypoint = 0
 waypoint = None
 traffic_light = None
 traffic_sign = None
+road_contour = None
 detected_red_traffic_light = False
 waypoint_deadzone = 0
+target_speed = 30  # km/h
 
-# CONSTANTS
-ROAD_WIDTH = 3.0
-TRAFFIC_LIGHT_SENSITIVITY = 0.4
-LIDAR_DISTANCE = 50.0
+# controllers
+steering_pid = PID(1.3, 0, 0.0, (-1, 1))
+throttle_pid = PID(0.5, 0.1, 0, (0, 1))
+
+# enable/disable certain features
+traffic_sign_detection = True
+traffic_light_detection = True
+collision_detection = True
 
 
 class LidarData:
-    def __init__(
-        self,
-        lidar_data,
-    ):
+    def __init__(self, lidar_data):
         self.point_cloud = self._convert_to_point_cloud(lidar_data)
         self.timestamp = lidar_data.timestamp
 
@@ -100,22 +110,23 @@ last_lidar_data: LidarData = None
 
 def lidar_sensor(lidar_data):
     global obstacles, last_lidar_data
-    lidar_data = LidarData(lidar_data)
-    if last_lidar_data is not None:
-        obstacles = []
-        for object_index in lidar_data.object_indices:
-            dist_new, point = lidar_data.query_object_index(object_index)
-            dist_old, _ = last_lidar_data.query_object_index(object_index)
-            if dist_old != np.inf and dist_new != np.inf:
-                obstacles.append((dist_new, (dist_new - dist_old) / (lidar_data.timestamp - last_lidar_data.timestamp), point))
-        obstacles.sort(key=lambda obstacle: obstacle[0])
-    if len(obstacles) > 0:
-        world.debug.draw_point(waypoint.transform.location(*obstacles[0][2]), size=0.1, color=carla.Color(255, 0, 0), life_time=0.1)
-    last_lidar_data = lidar_data
+    if collision_detection:
+        lidar_data = LidarData(lidar_data)
+        if last_lidar_data is not None:
+            obstacles = []
+            for object_index in lidar_data.object_indices:
+                dist_new, point = lidar_data.query_object_index(object_index)
+                dist_old, _ = last_lidar_data.query_object_index(object_index)
+                if dist_old != np.inf and dist_new != np.inf:
+                    obstacles.append((dist_new, (dist_new - dist_old) / (lidar_data.timestamp - last_lidar_data.timestamp), point))
+            obstacles.sort(key=lambda obstacle: obstacle[0])
+        if len(obstacles) > 0:
+            world.debug.draw_point(waypoint.transform.location(*obstacles[0][2]), size=0.1, color=carla.Color(255, 0, 0), life_time=0.1)
+        last_lidar_data = lidar_data
 
 
 def rgb_sensor(image):
-    global detected_red_traffic_light
+    global detected_red_traffic_light, target_speed
     image.convert(cc.Raw)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
     array = np.reshape(array, (image.height, image.width, 4))
@@ -124,6 +135,9 @@ def rgb_sensor(image):
     # convert from rgb to bgr
     array = np.array(array[:, :, ::-1])
     raw_image = np.copy(array)
+
+    if road_contour is not None:
+        cv2.drawContours(array, [road_contour], -1, (0, 0, 0), 1)
 
     if traffic_light is not None:
         area = cv2.contourArea(traffic_light)
@@ -154,75 +168,115 @@ def rgb_sensor(image):
     if traffic_sign is not None:
         area = cv2.contourArea(traffic_sign)
 
-        x, y, w, h = cv2.boundingRect(traffic_sign)
-        x1 = int(np.clip(x - w * BORDER, 0, WIDTH))
-        x2 = int(np.clip(x + w * (1 + BORDER), 0, WIDTH))
-        y1 = int(np.clip(y - h * BORDER, 0, HEIGHT))
-        y2 = int(np.clip(y + h * (1 + BORDER), 0, HEIGHT))
-        prediction = detect_traffic_sign(raw_image[y1:y2, x1:x2, :])
+        if area >= TRAFFIC_SIGN_DETECTION_RANGE[0] and area <= TRAFFIC_SIGN_DETECTION_RANGE[1]:
+            x, y, w, h = cv2.boundingRect(traffic_sign)
+            x1 = int(np.clip(x - w * BORDER, 0, WIDTH))
+            x2 = int(np.clip(x + w * (1 + BORDER), 0, WIDTH))
+            y1 = int(np.clip(y - h * BORDER, 0, HEIGHT))
+            y2 = int(np.clip(y + h * (1 + BORDER), 0, HEIGHT))
+            prediction = detect_traffic_sign(raw_image[y1:y2, x1:x2, :])
 
-        point = (max(traffic_sign[:, 0, 0]), min(traffic_sign[:, 0, 1]))
-        cv2.drawContours(array, [traffic_sign], -1, (255, 0, 0), 1)
-        cv2.putText(array, f"{prediction.name},{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 1)
+            point = (max(traffic_sign[:, 0, 0]), min(traffic_sign[:, 0, 1]))
+            cv2.drawContours(array, [traffic_sign], -1, (255, 0, 0), 1)
+            cv2.putText(array, f"{prediction.name},{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 1)
+
+            if prediction == TrafficSignType.SPEED_30_SIGN:
+                target_speed = 30
+            elif prediction == TrafficSignType.SPEED_60_SIGN:
+                target_speed = 60
+            else:
+                # FIXME better system for detecting speed 90 sign
+                target_speed = 90
 
     surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
     screen.blit(surface, (0, 0))
 
 
 def segmentation_sensor(image):
-    global traffic_light, traffic_sign
+    global traffic_light, traffic_sign, road_contour
     image.convert(cc.CityScapesPalette)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
     array = np.reshape(array, (image.height, image.width, 4))
     array = array[:, :, :3]
     array = array[:, :, ::-1]
 
-    # Traffic light
-    traffic_image = np.copy(array)
-    # preparing the mask to overlay
-    mask = cv2.inRange(traffic_image, np.array([249, 169, 29]), np.array([251, 171, 31]))
+    # Road Outline
+    road_image = np.copy(array)
+    mask_road_line = cv2.inRange(road_image, np.array([156, 233, 49]), np.array([158, 235, 51]))
+    mask_road = cv2.inRange(road_image, np.array([127, 63, 127]), np.array([129, 65, 129]))
+    mask = cv2.bitwise_or(mask_road_line, mask_road)
 
-    base_colour = np.full_like(traffic_image, np.array([255, 255, 255]))
-    traffic_image = cv2.bitwise_and(base_colour, base_colour, mask=mask)
-
-    # convert image to greyscale
-    traffic_image = cv2.cvtColor(traffic_image, cv2.COLOR_BGR2GRAY)
-
-    # contour detection
-    contours, _ = cv2.findContours(traffic_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
-
-    if len(contours) > 0:
-        traffic_light = max(contours, key=cv2.contourArea)
-    else:
-        traffic_light = None
-
-    # Traffic sign
-    traffic_image = np.copy(array)
-    # preparing the mask to overlay
-    mask = cv2.inRange(traffic_image, np.array([219, 219, 0]), np.array([221, 221, 1]))
-
-    base_colour = np.full_like(traffic_image, np.array([255, 255, 255]))
-    traffic_image = cv2.bitwise_and(base_colour, base_colour, mask=mask)
+    base_colour = np.full_like(road_image, np.array([100, 100, 100]))
+    road_image = cv2.bitwise_and(base_colour, base_colour, mask=mask)
 
     # create a zero array
-    stencil = np.zeros_like(traffic_image[:, :, 0])
+    stencil = np.zeros_like(road_image[:, :, 0])
 
     # specify coordinates of the polygon
-    polygon = np.array([[int(WIDTH / 2), 200], [int(WIDTH / 2), HEIGHT], [WIDTH, HEIGHT], [WIDTH, 200]])
+    polygon = np.array([[200, HEIGHT], [200, HEIGHT - 200], [WIDTH - 200, HEIGHT - 200], [WIDTH - 200, HEIGHT]])
+
+    # fill polygon with ones
     cv2.fillConvexPoly(stencil, polygon, 255)
 
-    # convert image to greyscale
-    traffic_image = cv2.bitwise_and(traffic_image, traffic_image, mask=stencil)
-    traffic_image = cv2.cvtColor(traffic_image, cv2.COLOR_BGR2GRAY)
+    # apply stencil
+    road_image = cv2.bitwise_and(road_image, road_image, mask=stencil)
+    road_image = cv2.cvtColor(road_image, cv2.COLOR_BGR2GRAY)
 
-    # contour detection
-    contours, _ = cv2.findContours(traffic_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+    contours, _ = cv2.findContours(road_image.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
 
     if len(contours) > 0:
-        traffic_sign = max(contours, key=cv2.contourArea)
-        # cv2.drawContours(traffic_image, [traffic_sign], -1, (255, 0, 0), 1)
+        road_contour = max(contours, key=cv2.contourArea)
     else:
-        traffic_sign = None
+        road_contour = None
+
+    # Traffic light
+    if traffic_light_detection:
+        traffic_image = np.copy(array)
+        # preparing the mask to overlay
+        mask = cv2.inRange(traffic_image, np.array([249, 169, 29]), np.array([251, 171, 31]))
+
+        base_colour = np.full_like(traffic_image, np.array([255, 255, 255]))
+        traffic_image = cv2.bitwise_and(base_colour, base_colour, mask=mask)
+
+        # convert image to greyscale
+        traffic_image = cv2.cvtColor(traffic_image, cv2.COLOR_BGR2GRAY)
+
+        # contour detection
+        contours, _ = cv2.findContours(traffic_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+
+        if len(contours) > 0:
+            traffic_light = max(contours, key=cv2.contourArea)
+        else:
+            traffic_light = None
+
+    # Traffic sign
+    if traffic_sign_detection:
+        traffic_image = np.copy(array)
+        # preparing the mask to overlay
+        mask = cv2.inRange(traffic_image, np.array([219, 219, 0]), np.array([221, 221, 1]))
+
+        base_colour = np.full_like(traffic_image, np.array([255, 255, 255]))
+        traffic_image = cv2.bitwise_and(base_colour, base_colour, mask=mask)
+
+        # create a zero array
+        stencil = np.zeros_like(traffic_image[:, :, 0])
+
+        # specify coordinates of the polygon
+        polygon = np.array([[int(WIDTH / 2), 200], [int(WIDTH / 2), HEIGHT], [WIDTH, HEIGHT], [WIDTH, 200]])
+        cv2.fillConvexPoly(stencil, polygon, 255)
+
+        # convert image to greyscale
+        traffic_image = cv2.bitwise_and(traffic_image, traffic_image, mask=stencil)
+        traffic_image = cv2.cvtColor(traffic_image, cv2.COLOR_BGR2GRAY)
+
+        # contour detection
+        contours, _ = cv2.findContours(traffic_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+
+        if len(contours) > 0:
+            traffic_sign = max(contours, key=cv2.contourArea)
+            # cv2.drawContours(traffic_image, [traffic_sign], -1, (255, 0, 0), 1)
+        else:
+            traffic_sign = None
 
 
 def gnss_sensor(sensor_data):
@@ -238,47 +292,36 @@ def gnss_sensor(sensor_data):
         distance_waypoint = sensor_data.transform.location.distance(waypoint.transform.location)
 
 
-def vehicle_control(waypoint_transform, vehicle_transform, target_speed) -> Tuple[float, float, float]:
-    global steering_delta, speed_delta, throttle, steering, brake
+def vehicle_control() -> Tuple[float, float, float]:
 
-    # calulate steering delta
-    forward_vector = vehicle_transform.get_forward_vector()
-    forward_vector = np.array([forward_vector.x, forward_vector.y, 0.0])
-    waypoint_vector = np.array(
-        [
-            waypoint_transform.location.x - vehicle_transform.location.x,
-            waypoint_transform.location.y - vehicle_transform.location.y,
-            0.0,
-        ]
-    )
-    wv_linalg = np.linalg.norm(waypoint_vector) * np.linalg.norm(forward_vector)
-    if wv_linalg == 0:
-        _dot = 1
+    # calulate steering value
+    if road_contour is not None:
+        moment = cv2.moments(road_contour)
+        cX = int(moment["m10"] / moment["m00"])
+
+        diff = cX - WIDTH / 2 + ROAD_OFFSET
+        steering = steering_pid(diff / 400, 0)
     else:
-        _dot = math.acos(np.clip(np.dot(waypoint_vector, forward_vector) / (wv_linalg), -1.0, 1.0))
+        steering = 0
 
-    _cross = np.cross(forward_vector, waypoint_vector)
-    if _cross[2] < 0:
-        _dot *= -1.0
-    steering_delta = _dot
-    speed_delta = target_speed - current_speed
+    # calculate speed delta
+    speed_delta = target_speed / 3.6 - current_speed
 
+    # detected obstacle in path
     if len(obstacles) > 0:
         speed_delta = min(speed_delta, obstacles[0][1] + (obstacles[0][0] - 3) / 2)
 
-    K_P_T = 0.5
-    K_P_S = 0.5
-
-    steering = np.clip(steering_delta * K_P_S, -1, 1)
+    # calculate throttle and brake from speed_delta
     if speed_delta > 0:
-        throttle = np.clip(speed_delta * K_P_T, 0, 0.5) / (1 + abs(steering))
+        throttle = throttle_pid(speed_delta, 0, (0, 1 / (1 + abs(steering))))
         brake = 0
     else:
         throttle = 0
-        brake = np.clip(-speed_delta * K_P_T, 0, 1.0)
+        brake = throttle_pid(-speed_delta, 0, (0, 1))
 
-    # if detected_red_traffic_light:
-    #     return 0.0, steering, 1.0
+    # detected red traffic light
+    if detected_red_traffic_light:
+        return 0.0, steering, 1.0
     return throttle, steering, brake
 
 
@@ -323,10 +366,13 @@ def visualize_path():
         )
 
 
-def main(ip: str):
+def main(ip: str, enable_path_visualization: bool, env_information: bool):
     global waypoint, waypoint_deadzone, lidar, world, vehicle
 
-    load_model()
+    if traffic_sign_detection:
+        from trafficsign import TrafficSignType, detect_traffic_sign, load_model
+
+        load_model()
 
     try:
         client = carla.Client(ip, 2000)
@@ -343,7 +389,7 @@ def main(ip: str):
         # Settings
         settings = world.get_settings()
         settings.synchronous_mode = True  # Enables synchronous mode
-        settings.fixed_delta_seconds = 0.1
+        settings.fixed_delta_seconds = 0.05
         world.apply_settings(settings)
 
         map = world.get_map()
@@ -363,14 +409,14 @@ def main(ip: str):
         print("Spawned vehicle")
 
         # RGB camera
-        rgb_camera_bp = blueprint_library.find("sensor.camera.rgb")
-        rgb_camera_bp.set_attribute("image_size_x", "1280")
-        rgb_camera_bp.set_attribute("image_size_y", "720")
-        rgb_camera_bp.set_attribute("fov", "60")
-        rgb_camera_bp.set_attribute("sensor_tick", "0.02")
+        rgb_bp = blueprint_library.find("sensor.camera.rgb")
+        rgb_bp.set_attribute("image_size_x", "1280")
+        rgb_bp.set_attribute("image_size_y", "720")
+        rgb_bp.set_attribute("fov", "60")
+        rgb_bp.set_attribute("sensor_tick", "0.02")
         relative_transform = carla.Transform(carla.Location(x=1.2, y=0, z=1.7), carla.Rotation(yaw=0))
-        rgb_camera = world.spawn_actor(rgb_camera_bp, relative_transform, vehicle)
-        rgb_camera.listen(rgb_sensor)
+        rgb = world.spawn_actor(rgb_bp, relative_transform, vehicle)
+        rgb.listen(rgb_sensor)
 
         # Segmentation camera
         segmentation_bp = blueprint_library.find("sensor.camera.semantic_segmentation")
@@ -387,25 +433,26 @@ def main(ip: str):
         gnss.listen(gnss_sensor)
 
         # Lidar sensor
-        # lidar_transform = carla.Transform(carla.Location(z=1.9))
-        # lidar_bp = blueprint_library.find("sensor.lidar.ray_cast_semantic")
-        # lidar_bp.set_attribute("upper_fov", "30.0")
-        # lidar_bp.set_attribute("lower_fov", "-25.0")
-        # lidar_bp.set_attribute("channels", "64.0")
-        # lidar_bp.set_attribute("range", str(LIDAR_DISTANCE))
-        # lidar_bp.set_attribute("points_per_second", "100000.0")
-        # lidar_bp.set_attribute("rotation_frequency", "10")
-        # lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
-        # lidar.listen(lidar_sensor)
+        lidar_transform = carla.Transform(carla.Location(z=1.9))
+        lidar_bp = blueprint_library.find("sensor.lidar.ray_cast_semantic")
+        lidar_bp.set_attribute("upper_fov", "30.0")
+        lidar_bp.set_attribute("lower_fov", "-25.0")
+        lidar_bp.set_attribute("channels", "64.0")
+        lidar_bp.set_attribute("range", str(LIDAR_DISTANCE))
+        lidar_bp.set_attribute("points_per_second", "100000.0")
+        lidar_bp.set_attribute("rotation_frequency", "10")
+        lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
+        lidar.listen(lidar_sensor)
 
         waypoint = map.get_waypoint(vehicle.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
         vehicle.set_transform(waypoint.transform)
         while 1:
-            throttle, steering, brake = vehicle_control(waypoint.transform, vehicle.get_transform(), 10)
+            throttle, steering, brake = vehicle_control()
             control = carla.VehicleControl(throttle=throttle, steer=steering, brake=brake, hand_brake=False, reverse=False, manual_gear_shift=False)
             vehicle.apply_control(control)
 
-            # visualize_path()
+            if enable_path_visualization:
+                visualize_path()
 
             pygame.display.flip()
             pygame.display.update()
@@ -415,23 +462,19 @@ def main(ip: str):
                 if event.type == pygame.QUIT:
                     quit()
 
-            if distance_waypoint <= 2 and waypoint_deadzone <= 0:
-                waypoint = random.choice(waypoint.next(3))
-                world.debug.draw_point(waypoint.transform.location)
-                waypoint_deadzone = 2
-            elif waypoint_deadzone != 0:
-                waypoint_deadzone -= 1
-            print(
-                f"throttle: {throttle:.3f}, steering: {steering:.3f}, brake: {brake:.3f}, speed:"
-                f" {current_speed:.3f} m/s, distance waypoint: {distance_waypoint:.3f}, obstacles: {obstacles}",
-                end="\033[0K\r",
-            )
+            if env_information:
+                print(
+                    f"throttle: {throttle:.3f}, steering: {steering:.3f}, brake: {brake:.3f}, speed:"
+                    f" {current_speed * 3.6:.3f} km/h, target speed {target_speed:3f} km/h, obstacles: {obstacles}",
+                    end="\033[0K\r",
+                )
     finally:
         try:
-            vehicle.destroy()
-            rgb_camera.destroy()
-            segmentation.destroy()
             gnss.destroy()
+            segmentation.destroy()
+            rgb.destroy()
+            lidar.destroy()
+            vehicle.destroy()
         except UnboundLocalError:
             pass
         pygame.quit()
@@ -441,5 +484,13 @@ def main(ip: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("host", nargs="?", default="127.0.0.1", help="IP of the host server (default: 127.0.0.1)")
+    parser.add_argument("--visualize_path", nargs="?", default=False, help="Enable path visualization")
+    parser.add_argument("--collision_detection", nargs="?", default=False, help="Enable collision detection")
+    parser.add_argument("--traffic_sign_detection", nargs="?", default=False, help="Enable detection of traffic signs")
+    parser.add_argument("--traffic_light_detection", nargs="?", default=False, help="Enable detection of traffic lights")
+    parser.add_argument("--env_information", nargs="?", default=True, help="Wether to print enviroment information")
     args = parser.parse_args()
-    main(args.host)
+    collision_detection = args.collision_detection
+    traffic_sign_detection = args.traffic_sign_detection
+    traffic_light_detection = args.traffic_light_detection
+    main(args.host, args.visualize_path, args.env_information)

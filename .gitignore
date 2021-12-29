@@ -3,3 +3,5 @@ __pycache__
 .vscode/settings.json
 image_detection.py
 images/*
+traffic_sign/*
+traffic_light/*
