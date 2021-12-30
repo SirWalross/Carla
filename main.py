@@ -22,8 +22,8 @@ WIDTH = 1280
 HEIGHT = 720
 ROAD_WIDTH = 3.0
 TRAFFIC_LIGHT_SENSITIVITY = 0.4
-LIDAR_DISTANCE = 50.0
-ROAD_OFFSET = 60
+LIDAR_DISTANCE = 47.0
+ROAD_OFFSET = 50
 BORDER = 0.1  # 10% border around image
 TRAFFIC_SIGN_DETECTION_RANGE = (500, 900)  # min and max area of sign
 
@@ -49,8 +49,8 @@ target_speed = 30  # km/h
 frame = 0
 
 # controllers
-steering_pid = PID(1.0, 0, 0.0, (-1, 1))
-throttle_pid = PID(1.0, 1.0, 0, (0, 1))
+steering_pid = PID(2.0, 0, 0.0, (-1, 1))
+throttle_pid = PID(1.2, 1.0, 0, (0, 1))
 
 # enable/disable certain features
 traffic_sign_detection = True
@@ -129,7 +129,7 @@ def lidar_sensor(lidar_data):
 
 
 def rgb_sensor(image):
-    global detected_red_traffic_light, target_speed
+    global detected_red_traffic_light, target_speed, frame
     image.convert(cc.Raw)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
     array = np.reshape(array, (image.height, image.width, 4))
@@ -193,6 +193,8 @@ def rgb_sensor(image):
 
     surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
     screen.blit(surface, (0, 0))
+    frame += 1
+    cv2.imwrite(f"images/traffic{frame}.png", array[:, :, ::-1])
 
 
 def segmentation_sensor(image):
@@ -315,12 +317,8 @@ def vehicle_control() -> Tuple[float, float, float]:
         speed_delta = min(speed_delta, obstacles[0][1] + (obstacles[0][0] - 3) / 2)
 
     # calculate throttle and brake from speed_delta
-    if speed_delta > 0:
-        throttle = throttle_pid(speed_delta, 0, (0, 1 / (1 + abs(steering))))
-        brake = 0
-    else:
-        throttle = 0
-        brake = throttle_pid(-speed_delta, 0, (0, 1))
+    throttle = throttle_pid(speed_delta, 0, (0, 1 / (1 + abs(steering))))
+    brake = 0
 
     # detected red traffic light
     if detected_red_traffic_light:

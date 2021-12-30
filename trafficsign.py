@@ -38,11 +38,11 @@ def detect_traffic_sign(image: np.ndarray) -> TrafficSignType:
     traffic_sign = np.argmax(model.predict(image.numpy()[None, :, :, ::-1]))
     try:
         traffic_sign_type = TrafficSignType(traffic_sign)
-        cv2.imwrite(f"images/traffic{counter}{traffic_sign_type.name}.png", image.numpy()[:, :, ::-1] * 255)
+        cv2.imwrite(f"signs/traffic{counter}{traffic_sign_type.name}.png", image.numpy()[:, :, ::-1] * 255)
         return traffic_sign_type
     except ValueError:
         # if traffic_sign < 10:
         #     return TrafficSignType.SPEED_90_SIGN
         # else:
-        cv2.imwrite(f"images/traffic{counter}invalid.png", image.numpy()[:, :, ::-1] * 255)
+        cv2.imwrite(f"signs/traffic{counter}invalid.png", image.numpy()[:, :, ::-1] * 255)
         return TrafficSignType.INVALID_SIGN
