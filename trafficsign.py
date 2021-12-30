@@ -28,15 +28,21 @@ class TrafficSignType(Enum):
     YIELD_SIGN = 13
     STOP_SIGN = 14
     INVALID_SIGN = 44
+    SPEED_90_SIGN = 45
 
 
 def detect_traffic_sign(image: np.ndarray) -> TrafficSignType:
     global counter
     image = tf.image.resize(image, (48, 48)) / 255.0
-    cv2.imwrite(f"images/traffic{counter}.png", image.numpy()[:, :, ::-1] * 255)
     counter += 1
     traffic_sign = np.argmax(model.predict(image.numpy()[None, :, :, ::-1]))
     try:
-        return TrafficSignType(traffic_sign)
+        traffic_sign_type = TrafficSignType(traffic_sign)
+        cv2.imwrite(f"images/traffic{counter}{traffic_sign_type.name}.png", image.numpy()[:, :, ::-1] * 255)
+        return traffic_sign_type
     except ValueError:
-        return TrafficSignType.INVALID_SIGNf
+        # if traffic_sign < 10:
+        #     return TrafficSignType.SPEED_90_SIGN
+        # else:
+        cv2.imwrite(f"images/traffic{counter}invalid.png", image.numpy()[:, :, ::-1] * 255)
+        return TrafficSignType.INVALID_SIGN

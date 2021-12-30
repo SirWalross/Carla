@@ -11,6 +11,8 @@ from pygame.locals import *
 from carla import ColorConverter as cc
 
 from pid import PID
+from trafficsign import TrafficSignType, load_model, detect_traffic_sign
+from spawn_road_borders import spawn_road_borders
 
 random.seed(42)
 
@@ -23,7 +25,7 @@ TRAFFIC_LIGHT_SENSITIVITY = 0.4
 LIDAR_DISTANCE = 50.0
 ROAD_OFFSET = 60
 BORDER = 0.1  # 10% border around image
-TRAFFIC_SIGN_DETECTION_RANGE = (0, 1000)  # min and max area of sign
+TRAFFIC_SIGN_DETECTION_RANGE = (500, 900)  # min and max area of sign
 
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -44,10 +46,11 @@ road_contour = None
 detected_red_traffic_light = False
 waypoint_deadzone = 0
 target_speed = 30  # km/h
+frame = 0
 
 # controllers
-steering_pid = PID(1.3, 0, 0.0, (-1, 1))
-throttle_pid = PID(0.5, 0.1, 0, (0, 1))
+steering_pid = PID(1.0, 0, 0.0, (-1, 1))
+throttle_pid = PID(1.0, 1.0, 0, (0, 1))
 
 # enable/disable certain features
 traffic_sign_detection = True
@@ -177,15 +180,15 @@ def rgb_sensor(image):
             prediction = detect_traffic_sign(raw_image[y1:y2, x1:x2, :])
 
             point = (max(traffic_sign[:, 0, 0]), min(traffic_sign[:, 0, 1]))
-            cv2.drawContours(array, [traffic_sign], -1, (255, 0, 0), 1)
-            cv2.putText(array, f"{prediction.name},{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 1)
+            color = (255, 255, 255) if prediction != TrafficSignType.INVALID_SIGN else (255, 0, 0)
+            cv2.drawContours(array, [traffic_sign], -1, color, 1)
+            cv2.putText(array, f"{prediction.name},{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, color, 1)
 
             if prediction == TrafficSignType.SPEED_30_SIGN:
                 target_speed = 30
             elif prediction == TrafficSignType.SPEED_60_SIGN:
                 target_speed = 60
-            else:
-                # FIXME better system for detecting speed 90 sign
+            elif prediction == TrafficSignType.SPEED_90_SIGN:
                 target_speed = 90
 
     surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
@@ -366,12 +369,10 @@ def visualize_path():
         )
 
 
-def main(ip: str, enable_path_visualization: bool, env_information: bool):
+def main(ip: str, enable_path_visualization: bool, env_information: bool, road_borders: bool):
     global waypoint, waypoint_deadzone, lidar, world, vehicle
 
     if traffic_sign_detection:
-        from trafficsign import TrafficSignType, detect_traffic_sign, load_model
-
         load_model()
 
     try:
@@ -394,19 +395,14 @@ def main(ip: str, enable_path_visualization: bool, env_information: bool):
 
         map = world.get_map()
         blueprint_library = world.get_blueprint_library()
-        spawn_points = world.get_map().get_spawn_points()
-        vehicle = None
-        while True:
-            try:
-                spawn_point = random.choice(spawn_points)
-                spawn_point.z = 10
-                spawn_point.location = world.get_random_location_from_navigation()
-                vehicle_bp = blueprint_library.find("vehicle.tesla.model3")
-                vehicle = world.spawn_actor(vehicle_bp, spawn_point)
-                break
-            except RuntimeError:
-                continue
+
+        spawn_point = carla.Transform(carla.Location(-5.38, 290.0, 1.0), carla.Rotation(yaw=-90.0))
+        vehicle_bp = blueprint_library.find("vehicle.tesla.model3")
+        vehicle = world.spawn_actor(vehicle_bp, spawn_point)
         print("Spawned vehicle")
+
+        if road_borders:
+            spawn_road_borders(world, blueprint_library)
 
         # RGB camera
         rgb_bp = blueprint_library.find("sensor.camera.rgb")
@@ -414,7 +410,7 @@ def main(ip: str, enable_path_visualization: bool, env_information: bool):
         rgb_bp.set_attribute("image_size_y", "720")
         rgb_bp.set_attribute("fov", "60")
         rgb_bp.set_attribute("sensor_tick", "0.02")
-        relative_transform = carla.Transform(carla.Location(x=1.2, y=0, z=1.7), carla.Rotation(yaw=0))
+        relative_transform = carla.Transform(carla.Location(x=1.2, y=0, z=1.7), carla.Rotation())
         rgb = world.spawn_actor(rgb_bp, relative_transform, vehicle)
         rgb.listen(rgb_sensor)
 
@@ -433,19 +429,18 @@ def main(ip: str, enable_path_visualization: bool, env_information: bool):
         gnss.listen(gnss_sensor)
 
         # Lidar sensor
-        lidar_transform = carla.Transform(carla.Location(z=1.9))
-        lidar_bp = blueprint_library.find("sensor.lidar.ray_cast_semantic")
-        lidar_bp.set_attribute("upper_fov", "30.0")
-        lidar_bp.set_attribute("lower_fov", "-25.0")
-        lidar_bp.set_attribute("channels", "64.0")
-        lidar_bp.set_attribute("range", str(LIDAR_DISTANCE))
-        lidar_bp.set_attribute("points_per_second", "100000.0")
-        lidar_bp.set_attribute("rotation_frequency", "10")
-        lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
-        lidar.listen(lidar_sensor)
+        if collision_detection:
+            lidar_transform = carla.Transform(carla.Location(z=1.9))
+            lidar_bp = blueprint_library.find("sensor.lidar.ray_cast_semantic")
+            lidar_bp.set_attribute("upper_fov", "30.0")
+            lidar_bp.set_attribute("lower_fov", "-25.0")
+            lidar_bp.set_attribute("channels", "64.0")
+            lidar_bp.set_attribute("range", str(LIDAR_DISTANCE))
+            lidar_bp.set_attribute("points_per_second", "100000.0")
+            lidar_bp.set_attribute("rotation_frequency", "10")
+            lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
+            lidar.listen(lidar_sensor)
 
-        waypoint = map.get_waypoint(vehicle.get_location(), project_to_road=True, lane_type=carla.LaneType.Driving)
-        vehicle.set_transform(waypoint.transform)
         while 1:
             throttle, steering, brake = vehicle_control()
             control = carla.VehicleControl(throttle=throttle, steer=steering, brake=brake, hand_brake=False, reverse=False, manual_gear_shift=False)
@@ -486,11 +481,12 @@ if __name__ == "__main__":
     parser.add_argument("host", nargs="?", default="127.0.0.1", help="IP of the host server (default: 127.0.0.1)")
     parser.add_argument("--visualize_path", nargs="?", default=False, help="Enable path visualization")
     parser.add_argument("--collision_detection", nargs="?", default=False, help="Enable collision detection")
-    parser.add_argument("--traffic_sign_detection", nargs="?", default=False, help="Enable detection of traffic signs")
+    parser.add_argument("--traffic_sign_detection", nargs="?", default=True, help="Enable detection of traffic signs")
     parser.add_argument("--traffic_light_detection", nargs="?", default=False, help="Enable detection of traffic lights")
     parser.add_argument("--env_information", nargs="?", default=True, help="Wether to print enviroment information")
+    parser.add_argument("--spawn_road_borders", nargs="?", default=True, help="Wether to spawn road borders")
     args = parser.parse_args()
     collision_detection = args.collision_detection
     traffic_sign_detection = args.traffic_sign_detection
     traffic_light_detection = args.traffic_light_detection
-    main(args.host, args.visualize_path, args.env_information)
+    main(args.host, args.visualize_path, args.env_information, args.spawn_road_borders)
