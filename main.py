@@ -21,12 +21,12 @@ random.seed(42)
 WIDTH = 1280
 HEIGHT = 720
 ROAD_WIDTH = 3.0
-TRAFFIC_LIGHT_SENSITIVITY = 0.4
+TRAFFIC_LIGHT_SENSITIVITY = 0.37
 LIDAR_DISTANCE = 47.0
 ROAD_OFFSET = 50
 BORDER = 0.1  # 10% border around image
-TRAFFIC_SIGN_DETECTION_RANGE = (500, 900)  # min and max area of sign
-MAX_FRAME = 1000
+TRAFFIC_SIGN_DETECTION_RANGE = (500, 1000)  # min and max area of sign
+MAX_FRAME = 2000
 
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
