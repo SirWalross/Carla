@@ -26,6 +26,7 @@ LIDAR_DISTANCE = 47.0
 ROAD_OFFSET = 50
 BORDER = 0.1  # 10% border around image
 TRAFFIC_SIGN_DETECTION_RANGE = (500, 900)  # min and max area of sign
+MAX_FRAME = 1000
 
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -47,10 +48,12 @@ detected_red_traffic_light = False
 waypoint_deadzone = 0
 target_speed = 30  # km/h
 frame = 0
+obstacles: List[Tuple[float, float, np.ndarray]] = []
+last_lidar_data: "LidarData" = None
 
 # controllers
-steering_pid = PID(2.0, 0, 0.0, (-1, 1))
-throttle_pid = PID(1.2, 1.0, 0, (0, 1))
+steering_pid = PID(2.0, 0, 0, (-1, 1))
+throttle_pid = PID(1.2, 0, 0, (0, 1))
 
 # enable/disable certain features
 traffic_sign_detection = True
@@ -63,7 +66,7 @@ class LidarData:
         self.point_cloud = self._convert_to_point_cloud(lidar_data)
         self.timestamp = lidar_data.timestamp
 
-        # Calculate as only x-axis, should do distance in forward direction, but oh well
+        # FIXME Calculate as only x-axis, should do distance in forward direction
 
         # self.distances = np.linalg.norm(self.point_cloud["position"], axis=1)
         self.distances = self.point_cloud["position"][:, 0]
@@ -105,10 +108,6 @@ class LidarData:
             return distances[i], self.point_cloud["position"][i, :]
         else:
             return np.inf, self.point_cloud["position"][0, :]
-
-
-obstacles: List[Tuple[float, float, np.ndarray]] = []
-last_lidar_data: LidarData = None
 
 
 def lidar_sensor(lidar_data):
@@ -394,7 +393,7 @@ def main(ip: str, enable_path_visualization: bool, env_information: bool, road_b
         map = world.get_map()
         blueprint_library = world.get_blueprint_library()
 
-        spawn_point = carla.Transform(carla.Location(-5.38, 290.0, 1.0), carla.Rotation(yaw=-90.0))
+        spawn_point = carla.Transform(carla.Location(-5.38, 280.0, 1.0), carla.Rotation(yaw=90.0))
         vehicle_bp = blueprint_library.find("vehicle.tesla.model3")
         vehicle = world.spawn_actor(vehicle_bp, spawn_point)
         print("Spawned vehicle")
@@ -439,7 +438,7 @@ def main(ip: str, enable_path_visualization: bool, env_information: bool, road_b
             lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
             lidar.listen(lidar_sensor)
 
-        while 1:
+        while frame < MAX_FRAME:
             throttle, steering, brake = vehicle_control()
             control = carla.VehicleControl(throttle=throttle, steer=steering, brake=brake, hand_brake=False, reverse=False, manual_gear_shift=False)
             vehicle.apply_control(control)
@@ -472,6 +471,7 @@ def main(ip: str, enable_path_visualization: bool, env_information: bool, road_b
             pass
         pygame.quit()
         print("\nCleaned up")
+        quit()
 
 
 if __name__ == "__main__":
@@ -480,7 +480,7 @@ if __name__ == "__main__":
     parser.add_argument("--visualize_path", nargs="?", default=False, help="Enable path visualization")
     parser.add_argument("--collision_detection", nargs="?", default=False, help="Enable collision detection")
     parser.add_argument("--traffic_sign_detection", nargs="?", default=True, help="Enable detection of traffic signs")
-    parser.add_argument("--traffic_light_detection", nargs="?", default=False, help="Enable detection of traffic lights")
+    parser.add_argument("--traffic_light_detection", nargs="?", default=True, help="Enable detection of traffic lights")
     parser.add_argument("--env_information", nargs="?", default=True, help="Wether to print enviroment information")
     parser.add_argument("--spawn_road_borders", nargs="?", default=True, help="Wether to spawn road borders")
     args = parser.parse_args()
