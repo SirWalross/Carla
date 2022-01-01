@@ -115,9 +115,9 @@ class LidarData:
         distances[object_indices] = np.inf
         if len(distances) > 0:
             i = np.argmin(distances)
-            return distances[i], self.point_cloud["position"][i, :]
+            return distances[i], self.point_cloud["position"][i]
         else:
-            return np.inf, self.point_cloud["position"][0, :]
+            return np.inf, self.point_cloud["position"][0]
 
 
 def lidar_sensor(lidar_data):
@@ -226,9 +226,15 @@ def segmentation_sensor(image):
 
     # Road Outline
     road_image = np.copy(array)
-    mask_road_line = cv2.inRange(road_image, np.array([156, 233, 49]), np.array([158, 235, 51]))
-    mask_road = cv2.inRange(road_image, np.array([127, 63, 127]), np.array([129, 65, 129]))
-    mask = cv2.bitwise_or(mask_road_line, mask_road)
+    masks = [
+        cv2.inRange(road_image, np.array([156, 233, 49]), np.array([158, 235, 51])),
+        cv2.inRange(road_image, np.array([127, 63, 127]), np.array([129, 65, 129])),
+        cv2.inRange(road_image, np.array([0, 0, 141]), np.array([1, 1, 143])),
+        cv2.inRange(road_image, np.array([(219, 19, 59)]), np.array([(221, 21, 61)])),
+    ]
+    mask = masks[0]
+    for m in masks[1:]:
+        mask = cv2.bitwise_or(mask, m)
 
     base_colour = np.full_like(road_image, np.array([100, 100, 100]))
     road_image = cv2.bitwise_and(base_colour, base_colour, mask=mask)
