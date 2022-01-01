@@ -35,8 +35,7 @@ speed_30_sign = cv2.imread("speed_signs/speed_30_sign.png", -1)
 speed_60_sign = cv2.imread("speed_signs/speed_60_sign.png", -1)
 speed_90_sign = cv2.imread("speed_signs/speed_90_sign.png", -1)
 
-pygame.init()
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
+screen = None
 
 world = None
 vehicle = None
@@ -404,10 +403,14 @@ def main(
     number_of_vehicles: int,
     number_of_walkers: int,
 ):
-    global waypoint, waypoint_deadzone, lidar, world, vehicle
+    global waypoint, waypoint_deadzone, lidar, world, vehicle, screen
 
     if traffic_sign_detection:
         load_model()
+    
+    if display_image:
+        pygame.init()
+        screen = pygame.display.set_mode((WIDTH, HEIGHT))
 
     client = carla.Client(ip, 2000)
     try:
@@ -487,14 +490,15 @@ def main(
 
             if enable_path_visualization:
                 visualize_path()
-
-            pygame.display.flip()
-            pygame.display.update()
             world.tick()
 
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    quit()
+            if display_image:
+                pygame.display.flip()
+                pygame.display.update()
+
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        quit()
 
             if env_information:
                 print(

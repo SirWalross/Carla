@@ -2,10 +2,6 @@ import time
 
 import carla
 
-from carla import VehicleLightState as vls
-
-import argparse
-import logging
 from numpy import random
 
 all_actors = []
@@ -33,13 +29,12 @@ def spawn_traffic(client, number_of_vehicles: int = 30, number_of_walkers: int =
     if number_of_vehicles < number_of_spawn_points:
         random.shuffle(spawn_points)
     elif number_of_vehicles > number_of_spawn_points:
-        msg = "requested %d vehicles, but could only find %d spawn points"
+        print("requested %d vehicles, but could only find %d spawn points")
         number_of_vehicles = number_of_spawn_points
 
     # @todo cannot import these directly.
     SpawnActor = carla.command.SpawnActor
     SetAutopilot = carla.command.SetAutopilot
-    SetVehicleLightState = carla.command.SetVehicleLightState
     FutureActor = carla.command.FutureActor
 
     # --------------
@@ -101,7 +96,7 @@ def spawn_traffic(client, number_of_vehicles: int = 30, number_of_walkers: int =
     walker_speed2 = []
     for i in range(len(results)):
         if results[i].error:
-            logging.error(results[i].error)
+            print(results[i].error)
         else:
             walkers_list.append({"id": results[i].actor_id})
             walker_speed2.append(walker_speed[i])
@@ -114,7 +109,7 @@ def spawn_traffic(client, number_of_vehicles: int = 30, number_of_walkers: int =
     results = client.apply_batch_sync(batch, True)
     for i in range(len(results)):
         if results[i].error:
-            logging.error(results[i].error)
+            print(results[i].error)
         else:
             walkers_list[i]["con"] = results[i].actor_id
     # 4. we put together the walkers and controllers id to get the objects from their id
