@@ -79,21 +79,25 @@ class LidarData:
     def valid_points(points: np.ndarray, tags: np.ndarray) -> np.ndarray:
         if np.abs(steering) <= 1e-4:
             return np.logical_and.reduce(
-                np.logical_or.reduce((tags == 4, tags == 10)),
-                points[:, 0] < LIDAR_DISTANCE,
-                points[:, 0] > 1,
-                points[:, 1] < 2,
-                points[:, 1] > -2,
+                [
+                    np.logical_or.reduce((tags == 4, tags == 10)),
+                    points[:, 0] < LIDAR_DISTANCE,
+                    points[:, 0] > 1,
+                    points[:, 1] < ROAD_WIDTH / 2,
+                    points[:, 1] > -ROAD_WIDTH / 2,
+                ]
             )
         else:
             r = 8 * (1 / np.abs(steering)) * (0.8 + throttle * 0.2)
             r1 = r - (ROAD_WIDTH / 2) * (0.8 + throttle * 0.2)
             r2 = r + (ROAD_WIDTH / 2) * (0.8 + throttle * 0.2)
             return np.logical_and.reduce(
-                np.logical_or.reduce((tags == 4, tags == 10)),
-                points[:, 0] > 1,
-                np.linalg.norm(points[:, :2], axis=1) >= r1,
-                np.linalg.norm(points[:, :2], axis=1) <= r2,
+                [
+                    np.logical_or.reduce((tags == 4, tags == 10)),
+                    points[:, 0] > 1,
+                    np.linalg.norm(points[:, :2], axis=1) >= r1,
+                    np.linalg.norm(points[:, :2], axis=1) <= r2,
+                ]
             )
 
     @staticmethod
