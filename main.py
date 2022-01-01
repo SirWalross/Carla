@@ -13,6 +13,7 @@ from carla import ColorConverter as cc
 from pid import PID
 from trafficsign import TrafficSignType, load_model, detect_traffic_sign
 from spawn_road_borders import spawn_road_borders
+from generate_traffic import spawn_traffic, destroy_traffic
 
 random.seed(42)
 
@@ -29,9 +30,9 @@ TRAFFIC_SIGN_DETECTION_RANGE = (500, 1000)  # min and max area of sign
 MAX_FRAME = 200000
 
 # traffic signs
-speed_30_sign = cv2.imread('speed_signs/speed_30_sign.png', -1)
-speed_60_sign = cv2.imread('speed_signs/speed_60_sign.png', -1)
-speed_90_sign = cv2.imread('speed_signs/speed_90_sign.png', -1)
+speed_30_sign = cv2.imread("speed_signs/speed_30_sign.png", -1)
+speed_60_sign = cv2.imread("speed_signs/speed_60_sign.png", -1)
+speed_90_sign = cv2.imread("speed_signs/speed_90_sign.png", -1)
 
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -97,7 +98,9 @@ class LidarData:
 
     @staticmethod
     def _convert_to_point_cloud(lidar_data):
-        dtype = np.dtype([("position", np.float32, (3,)), ("cos_angle", np.float32), ("object_index", np.uint32), ("tag", np.uint32)])
+        dtype = np.dtype(
+            [("position", np.float32, (3,)), ("cos_angle", np.float32), ("object_index", np.uint32), ("tag", np.uint32)]
+        )
         p_cloud = np.frombuffer(lidar_data.raw_data, dtype=dtype)
         tags = p_cloud["tag"]
         positions = np.array(p_cloud["position"])
@@ -125,10 +128,14 @@ def lidar_sensor(lidar_data):
                 dist_new, point = lidar_data.query_object_index(object_index)
                 dist_old, _ = last_lidar_data.query_object_index(object_index)
                 if dist_old != np.inf and dist_new != np.inf:
-                    obstacles.append((dist_new, (dist_new - dist_old) / (lidar_data.timestamp - last_lidar_data.timestamp), point))
+                    obstacles.append(
+                        (dist_new, (dist_new - dist_old) / (lidar_data.timestamp - last_lidar_data.timestamp), point)
+                    )
             obstacles.sort(key=lambda obstacle: obstacle[0])
         if len(obstacles) > 0:
-            world.debug.draw_point(waypoint.transform.location(*obstacles[0][2]), size=0.1, color=carla.Color(255, 0, 0), life_time=0.1)
+            world.debug.draw_point(
+                waypoint.transform.location(*obstacles[0][2]), size=0.1, color=carla.Color(255, 0, 0), life_time=0.1
+            )
         last_lidar_data = lidar_data
 
 
@@ -377,14 +384,22 @@ def visualize_path():
         )
 
 
-def main(ip: str, enable_path_visualization: bool, env_information: bool, road_borders: bool):
+def main(
+    ip: str,
+    enable_path_visualization: bool,
+    env_information: bool,
+    road_borders: bool,
+    generate_traffic: bool,
+    number_of_vehicles: int,
+    number_of_walkers: int,
+):
     global waypoint, waypoint_deadzone, lidar, world, vehicle
 
     if traffic_sign_detection:
         load_model()
 
+    client = carla.Client(ip, 2000)
     try:
-        client = carla.Client(ip, 2000)
         client.set_timeout(10.0)
         world = client.load_world("Town02")
         # world = client.get_world()
@@ -411,6 +426,9 @@ def main(ip: str, enable_path_visualization: bool, env_information: bool, road_b
 
         if road_borders:
             spawn_road_borders(world, blueprint_library)
+
+        if generate_traffic:
+            spawn_traffic(client, number_of_vehicles, number_of_walkers)
 
         # RGB camera
         rgb_bp = blueprint_library.find("sensor.camera.rgb")
@@ -451,7 +469,9 @@ def main(ip: str, enable_path_visualization: bool, env_information: bool, road_b
 
         while frame < MAX_FRAME:
             throttle, steering, brake = vehicle_control()
-            control = carla.VehicleControl(throttle=throttle, steer=steering, brake=brake, hand_brake=False, reverse=False, manual_gear_shift=False)
+            control = carla.VehicleControl(
+                throttle=throttle, steer=steering, brake=brake, hand_brake=False, reverse=False, manual_gear_shift=False
+            )
             vehicle.apply_control(control)
 
             if enable_path_visualization:
@@ -472,6 +492,9 @@ def main(ip: str, enable_path_visualization: bool, env_information: bool, road_b
                     end="\033[0K\r",
                 )
     finally:
+        if generate_traffic:
+            destroy_traffic(client)
+
         try:
             gnss.destroy()
             segmentation.destroy()
@@ -480,6 +503,7 @@ def main(ip: str, enable_path_visualization: bool, env_information: bool, road_b
             vehicle.destroy()
         except UnboundLocalError:
             pass
+
         pygame.quit()
         print("\nCleaned up")
         quit()
@@ -494,8 +518,19 @@ if __name__ == "__main__":
     parser.add_argument("--traffic_light_detection", nargs="?", default=True, help="Enable detection of traffic lights")
     parser.add_argument("--env_information", nargs="?", default=True, help="Wether to print enviroment information")
     parser.add_argument("--spawn_road_borders", nargs="?", default=True, help="Wether to spawn road borders")
+    parser.add_argument("--spawn_traffic", nargs="?", default=True, help="Wether to spawn traffic")
+    parser.add_argument("--number-of-vehicles", default=30, type=int, help="Number of vehicles (default: 30)")
+    parser.add_argument("--number-of-walkers", default=10, type=int, help="Number of walkers (default: 10)")
     args = parser.parse_args()
     collision_detection = args.collision_detection
     traffic_sign_detection = args.traffic_sign_detection
     traffic_light_detection = args.traffic_light_detection
-    main(args.host, args.visualize_path, args.env_information, args.spawn_road_borders)
+    main(
+        args.host,
+        args.visualize_path,
+        args.env_information,
+        args.spawn_road_borders,
+        args.spawn_traffic,
+        args.number_of_vehicles,
+        args.number_of_walkers,
+    )
