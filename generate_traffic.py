@@ -11,7 +11,7 @@ all_id = []
 
 
 def spawn_traffic(client, number_of_vehicles: int = 30, number_of_walkers: int = 10):
-    global vehicles_list, walkers_list, all_id, all_actors
+    global all_actors
 
     world = client.get_world()
 

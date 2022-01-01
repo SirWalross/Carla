@@ -171,7 +171,7 @@ def rgb_sensor(image):
             cv2.drawContours(array, [traffic_light], -1, (0, 255, 0), 1)
             cv2.putText(array, f"{average_colours[0]:.2f},{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 1)
 
-        if area > 1800 and average_colours[0] > TRAFFIC_LIGHT_SENSITIVITY:
+        if area > 1800 and average_colours[0] > TRAFFIC_LIGHT_SENSITIVITY and traffic_light_detection:
             detected_red_traffic_light = True
         else:
             detected_red_traffic_light = False
@@ -261,24 +261,23 @@ def segmentation_sensor(image):
         road_contour = None
 
     # Traffic light
-    if traffic_light_detection:
-        traffic_image = np.copy(array)
-        # preparing the mask to overlay
-        mask = cv2.inRange(traffic_image, np.array([249, 169, 29]), np.array([251, 171, 31]))
+    traffic_image = np.copy(array)
+    # preparing the mask to overlay
+    mask = cv2.inRange(traffic_image, np.array([249, 169, 29]), np.array([251, 171, 31]))
 
-        base_colour = np.full_like(traffic_image, np.array([255, 255, 255]))
-        traffic_image = cv2.bitwise_and(base_colour, base_colour, mask=mask)
+    base_colour = np.full_like(traffic_image, np.array([255, 255, 255]))
+    traffic_image = cv2.bitwise_and(base_colour, base_colour, mask=mask)
 
-        # convert image to greyscale
-        traffic_image = cv2.cvtColor(traffic_image, cv2.COLOR_BGR2GRAY)
+    # convert image to greyscale
+    traffic_image = cv2.cvtColor(traffic_image, cv2.COLOR_BGR2GRAY)
 
-        # contour detection
-        contours, _ = cv2.findContours(traffic_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+    # contour detection
+    contours, _ = cv2.findContours(traffic_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
 
-        if len(contours) > 0:
-            traffic_light = max(contours, key=cv2.contourArea)
-        else:
-            traffic_light = None
+    if len(contours) > 0:
+        traffic_light = max(contours, key=cv2.contourArea)
+    else:
+        traffic_light = None
 
     # Traffic sign
     if traffic_sign_detection:
@@ -337,13 +336,13 @@ def vehicle_control() -> Tuple[float, float, float]:
 
     # calculate speed delta
     if len(obstacles) > 0:
-        speed_delta = min(target_speed / 3.6, obstacles[0][1] + (obstacles[0][0] - 3) / 2) - current_speed
+        speed_delta = min(target_speed / 3.6, obstacles[0][1] + (obstacles[0][0] - 7) / 2) - current_speed
     else:
         speed_delta = target_speed / 3.6 - current_speed
 
     # calculate throttle and brake from speed_delta
     throttle = throttle_pid(speed_delta, 0, (-1, 1 / (1 + abs(steering))))
-    brake = throttle if throttle < 0 else 0
+    brake = -throttle if throttle < 0 else 0
     throttle = throttle if throttle > 0 else 0
 
     if brake > 0:
@@ -399,7 +398,7 @@ def visualize_path():
 def main(
     ip: str,
     enable_path_visualization: bool,
-    env_information: bool,
+    telemetry_info: bool,
     road_borders: bool,
     generate_traffic: bool,
     number_of_vehicles: int,
@@ -502,7 +501,7 @@ def main(
                     if event.type == pygame.QUIT:
                         quit()
 
-            if env_information:
+            if telemetry_info:
                 print(
                     f"throttle: {throttle:.3f}, steering: {steering:.3f}, brake: {brake:.3f}, speed:"
                     f" {current_speed * 3.6:.3f} km/h, target speed {target_speed:3f} km/h, obstacles: {len(obstacles)}",
@@ -543,7 +542,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-traffic_light_detection", dest="traffic_light_detection", action="store_false", help="Disable detection of traffic lights"
     )
-    parser.add_argument("--no-env_information", dest="env_information", action="store_false", help="Disable ")
+    parser.add_argument("--no-telemetry_info", dest="telemetry_info", action="store_false", help="Disable telemetry info")
     parser.add_argument("--no-spawn_road_borders", dest="spawn_road_borders", action="store_false", help="Disable spawning of road borders")
     parser.add_argument("--no-spawn_traffic", dest="spawn_traffic", action="store_false", help="Disable spawning of traffic")
     parser.add_argument("--write_to_file", dest="write_to_file", action="store_true", help="Enable writing of image to file")
@@ -577,7 +576,7 @@ if __name__ == "__main__":
     main(
         args.host,
         args.visualize_path,
-        args.env_information,
+        args.telemetry_info,
         args.spawn_road_borders,
         args.spawn_traffic,
         args.number_of_vehicles,
