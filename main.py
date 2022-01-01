@@ -59,7 +59,7 @@ last_lidar_data: "LidarData" = None
 
 # controllers
 steering_pid = PID(2.0, 0, 0, (-1, 1))
-throttle_pid = PID(1.2, 0, 0, (0, 1))
+throttle_pid = PID(1.2, 0, 0, (-1, 1))
 
 # enable/disable certain features
 traffic_sign_detection = True
@@ -335,7 +335,11 @@ def vehicle_control() -> Tuple[float, float, float]:
 
     # calculate throttle and brake from speed_delta
     throttle = throttle_pid(speed_delta, 0, (0, 1 / (1 + abs(steering))))
-    brake = 0
+    brake = throttle if throttle < 0 else 0
+    throttle = throttle if throttle > 0 else 0
+    
+    if brake > 0:
+        steering = 0
 
     # detected red traffic light
     if detected_red_traffic_light:
@@ -502,6 +506,8 @@ def main(
             lidar.destroy()
             vehicle.destroy()
         except UnboundLocalError:
+            pass
+        except NameError:
             pass
 
         pygame.quit()
