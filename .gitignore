@@ -7,3 +7,4 @@ traffic_sign/*
 traffic_light/*
 signs/*
 generate_traffic.py
+SPEED_*

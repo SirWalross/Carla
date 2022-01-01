@@ -26,7 +26,12 @@ LIDAR_DISTANCE = 47.0
 ROAD_OFFSET = 50
 BORDER = 0.1  # 10% border around image
 TRAFFIC_SIGN_DETECTION_RANGE = (500, 1000)  # min and max area of sign
-MAX_FRAME = 2000
+MAX_FRAME = 200000
+
+# traffic signs
+speed_30_sign = cv2.imread('speed_signs/speed_30_sign.png', -1)
+speed_60_sign = cv2.imread('speed_signs/speed_60_sign.png', -1)
+speed_90_sign = cv2.imread('speed_signs/speed_90_sign.png', -1)
 
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -190,10 +195,16 @@ def rgb_sensor(image):
             elif prediction == TrafficSignType.SPEED_90_SIGN:
                 target_speed = 90
 
+    # overlay current speed sign
+    current_sign = speed_30_sign if target_speed == 30 else (speed_60_sign if target_speed == 60 else speed_90_sign)
+    x1, x2 = 0, current_sign.shape[1]
+    y1, y2 = HEIGHT - current_sign.shape[0], HEIGHT
+    array[y1:y2, x1:x2] = current_sign[:, :, 2::-1]
+
+    # display image
     surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
     screen.blit(surface, (0, 0))
     frame += 1
-    cv2.imwrite(f"images/traffic{frame}.png", array[:, :, ::-1])
 
 
 def segmentation_sensor(image):
