@@ -5,15 +5,10 @@ from typing import List, Tuple
 import numpy as np
 import carla
 import cv2
-import pygame
-from pygame.locals import *
 
 from carla import ColorConverter as cc
 
 from pid import PID
-from trafficsign import TrafficSignType, load_model, detect_traffic_sign
-from spawn_road_borders import spawn_road_borders
-from generate_traffic import spawn_traffic, destroy_traffic
 
 random.seed(42)
 
@@ -407,7 +402,7 @@ def main(
 
     if traffic_sign_detection:
         load_model()
-    
+
     if display_image:
         pygame.init()
         screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -541,11 +536,27 @@ if __name__ == "__main__":
     parser.add_argument("--write_to_file", nargs="?", default=False, help="Enable writing of image to file")
     parser.add_argument("--display_image", nargs="?", default=True, help="Enable displaying of image")
     args = parser.parse_args()
+
+    # import needed modules
+    if args.spawn_traffic:
+        from generate_traffic import spawn_traffic, destroy_traffic
+
+    if args.traffic_sign_detection:
+        from trafficsign import TrafficSignType, load_model, detect_traffic_sign
+    
+    if args.spawn_road_borders:
+        from spawn_road_borders import spawn_road_borders
+
+    if args.display_image:
+        import pygame
+        from pygame.locals import *
+
     collision_detection = args.collision_detection
     traffic_sign_detection = args.traffic_sign_detection
     traffic_light_detection = args.traffic_light_detection
     write_to_file = args.write_to_file
     display_image = args.display_image
+
     main(
         args.host,
         args.visualize_path,
