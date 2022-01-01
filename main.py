@@ -95,9 +95,7 @@ class LidarData:
 
     @staticmethod
     def _convert_to_point_cloud(lidar_data):
-        dtype = np.dtype(
-            [("position", np.float32, (3,)), ("cos_angle", np.float32), ("object_index", np.uint32), ("tag", np.uint32)]
-        )
+        dtype = np.dtype([("position", np.float32, (3,)), ("cos_angle", np.float32), ("object_index", np.uint32), ("tag", np.uint32)])
         p_cloud = np.frombuffer(lidar_data.raw_data, dtype=dtype)
         tags = p_cloud["tag"]
         positions = np.array(p_cloud["position"])
@@ -125,14 +123,10 @@ def lidar_sensor(lidar_data):
                 dist_new, point = lidar_data.query_object_index(object_index)
                 dist_old, _ = last_lidar_data.query_object_index(object_index)
                 if dist_old != np.inf and dist_new != np.inf:
-                    obstacles.append(
-                        (dist_new, (dist_new - dist_old) / (lidar_data.timestamp - last_lidar_data.timestamp), point)
-                    )
+                    obstacles.append((dist_new, (dist_new - dist_old) / (lidar_data.timestamp - last_lidar_data.timestamp), point))
             obstacles.sort(key=lambda obstacle: obstacle[0])
         if len(obstacles) > 0:
-            world.debug.draw_point(
-                waypoint.transform.location(*obstacles[0][2]), size=0.1, color=carla.Color(255, 0, 0), life_time=0.1
-            )
+            world.debug.draw_point(waypoint.transform.location(*obstacles[0][2]), size=0.1, color=carla.Color(255, 0, 0), life_time=0.1)
         last_lidar_data = lidar_data
 
 
@@ -523,18 +517,24 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("host", nargs="?", default="127.0.0.1", help="IP of the host server (default: 127.0.0.1)")
-    parser.add_argument("--visualize_path", nargs="?", default=False, help="Enable path visualization")
-    parser.add_argument("--collision_detection", nargs="?", default=False, help="Enable collision detection")
-    parser.add_argument("--traffic_sign_detection", nargs="?", default=True, help="Enable detection of traffic signs")
-    parser.add_argument("--traffic_light_detection", nargs="?", default=True, help="Enable detection of traffic lights")
-    parser.add_argument("--env_information", nargs="?", default=True, help="Wether to print enviroment information")
-    parser.add_argument("--spawn_road_borders", nargs="?", default=True, help="Wether to spawn road borders")
-    parser.add_argument("--spawn_traffic", nargs="?", default=True, help="Wether to spawn traffic")
-    parser.add_argument("--number-of-vehicles", default=30, type=int, help="Number of vehicles (default: 30)")
-    parser.add_argument("--number-of-walkers", default=10, type=int, help="Number of walkers (default: 10)")
-    parser.add_argument("--write_to_file", nargs="?", default=False, help="Enable writing of image to file")
-    parser.add_argument("--display_image", nargs="?", default=True, help="Enable displaying of image")
+    parser.add_argument("host", nargs="?", default="127.0.0.1", help="IP of the host server")
+    parser.add_argument("--visualize_path", dest="visualize_path", action="store_true", help="Enable path visualization")
+    parser.add_argument("--no-collision_detection", dest="collision_detection", action="store_false", help="Enable collision detection")
+    parser.add_argument(
+        "--no-traffic_sign_detection", dest="traffic_sign_detection", action="store_false", help="Enable detection of traffic signs"
+    )
+    parser.add_argument(
+        "--no-traffic_light_detection", dest="traffic_light_detection", action="store_false", help="Enable detection of traffic lights"
+    )
+    parser.add_argument("--no-env_information", dest="env_information", action="store_false", help="Wether to print enviroment information")
+    parser.add_argument("--no-spawn_road_borders", dest="spawn_road_borders", action="store_false", help="Wether to spawn road borders")
+    parser.add_argument("--no-spawn_traffic", dest="spawn_traffic", action="store_false", help="Wether to spawn traffic")
+    parser.add_argument("--write_to_file", dest="write_to_file", action="store_true", help="Enable writing of image to file")
+    parser.add_argument("--no-display_image", dest="display_image", action="store_false", help="Enable displaying of image")
+
+    parser.add_argument("--number-of-vehicles", default=30, type=int, help="Number of vehicles")
+    parser.add_argument("--number-of-walkers", default=10, type=int, help="Number of walkers")
+
     args = parser.parse_args()
 
     # import needed modules
@@ -543,7 +543,7 @@ if __name__ == "__main__":
 
     if args.traffic_sign_detection:
         from trafficsign import TrafficSignType, load_model, detect_traffic_sign
-    
+
     if args.spawn_road_borders:
         from spawn_road_borders import spawn_road_borders
 
