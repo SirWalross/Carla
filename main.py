@@ -80,7 +80,10 @@ class LidarData:
         if np.abs(steering) <= 1e-4:
             return np.logical_and.reduce(
                 np.logical_or.reduce((tags == 4, tags == 10)),
-                (points[:, 0] < LIDAR_DISTANCE, points[:, 0] > 1, points[:, 1] < 2, points[:, 1] > -2),
+                points[:, 0] < LIDAR_DISTANCE,
+                points[:, 0] > 1,
+                points[:, 1] < 2,
+                points[:, 1] > -2,
             )
         else:
             r = 8 * (1 / np.abs(steering)) * (0.8 + throttle * 0.2)
@@ -510,7 +513,11 @@ def main(
         except NameError:
             pass
 
-        pygame.quit()
+        try:
+            pygame.quit()
+        except NameError:
+            pass
+
         print("\nCleaned up")
         quit()
 
@@ -519,18 +526,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("host", nargs="?", default="127.0.0.1", help="IP of the host server")
     parser.add_argument("--visualize_path", dest="visualize_path", action="store_true", help="Enable path visualization")
-    parser.add_argument("--no-collision_detection", dest="collision_detection", action="store_false", help="Enable collision detection")
+    parser.add_argument("--no-collision_detection", dest="collision_detection", action="store_false", help="Disable collision detection")
     parser.add_argument(
-        "--no-traffic_sign_detection", dest="traffic_sign_detection", action="store_false", help="Enable detection of traffic signs"
+        "--no-traffic_sign_detection", dest="traffic_sign_detection", action="store_false", help="Disable detection of traffic signs"
     )
     parser.add_argument(
-        "--no-traffic_light_detection", dest="traffic_light_detection", action="store_false", help="Enable detection of traffic lights"
+        "--no-traffic_light_detection", dest="traffic_light_detection", action="store_false", help="Disable detection of traffic lights"
     )
-    parser.add_argument("--no-env_information", dest="env_information", action="store_false", help="Wether to print enviroment information")
-    parser.add_argument("--no-spawn_road_borders", dest="spawn_road_borders", action="store_false", help="Wether to spawn road borders")
-    parser.add_argument("--no-spawn_traffic", dest="spawn_traffic", action="store_false", help="Wether to spawn traffic")
+    parser.add_argument("--no-env_information", dest="env_information", action="store_false", help="Disable ")
+    parser.add_argument("--no-spawn_road_borders", dest="spawn_road_borders", action="store_false", help="Disable spawning of road borders")
+    parser.add_argument("--no-spawn_traffic", dest="spawn_traffic", action="store_false", help="Disable spawning of traffic")
     parser.add_argument("--write_to_file", dest="write_to_file", action="store_true", help="Enable writing of image to file")
-    parser.add_argument("--no-display_image", dest="display_image", action="store_false", help="Enable displaying of image")
+    parser.add_argument("--no-display_image", dest="display_image", action="store_false", help="Disable displaying of image")
 
     parser.add_argument("--number-of-vehicles", default=30, type=int, help="Number of vehicles")
     parser.add_argument("--number-of-walkers", default=10, type=int, help="Number of walkers")
