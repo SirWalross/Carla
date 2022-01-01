@@ -54,7 +54,7 @@ last_lidar_data: "LidarData" = None
 
 # controllers
 steering_pid = PID(2.0, 0, 0, (-1, 1))
-throttle_pid = PID(1.2, 0, 0, (-1, 1))
+throttle_pid = PID(0.8, 0, 0, (-1, 1))
 
 # enable/disable certain features
 traffic_sign_detection = True
@@ -117,7 +117,10 @@ class LidarData:
             i = np.argmin(distances)
             return distances[i], self.point_cloud["position"][i]
         else:
-            return np.inf, self.point_cloud["position"][0]
+            try:
+                return np.inf, self.point_cloud["position"][0]
+            except IndexError:
+                return np.inf, [0, 0, 0]
 
 
 def lidar_sensor(lidar_data):
@@ -132,8 +135,6 @@ def lidar_sensor(lidar_data):
                 if dist_old != np.inf and dist_new != np.inf:
                     obstacles.append((dist_new, (dist_new - dist_old) / (lidar_data.timestamp - last_lidar_data.timestamp), point))
             obstacles.sort(key=lambda obstacle: obstacle[0])
-        if len(obstacles) > 0:
-            world.debug.draw_point(waypoint.transform.location(*obstacles[0][2]), size=0.1, color=carla.Color(255, 0, 0), life_time=0.1)
         last_lidar_data = lidar_data
 
 
@@ -335,14 +336,13 @@ def vehicle_control() -> Tuple[float, float, float]:
         steering = 0
 
     # calculate speed delta
-    speed_delta = target_speed / 3.6 - current_speed
-
-    # detected obstacle in path
     if len(obstacles) > 0:
-        speed_delta = min(speed_delta, obstacles[0][1] + (obstacles[0][0] - 3) / 2)
+        speed_delta = min(target_speed / 3.6, obstacles[0][1] + (obstacles[0][0] - 3) / 2) - current_speed
+    else:
+        speed_delta = target_speed / 3.6 - current_speed
 
     # calculate throttle and brake from speed_delta
-    throttle = throttle_pid(speed_delta, 0, (0, 1 / (1 + abs(steering))))
+    throttle = throttle_pid(speed_delta, 0, (-1, 1 / (1 + abs(steering))))
     brake = throttle if throttle < 0 else 0
     throttle = throttle if throttle > 0 else 0
 
@@ -505,7 +505,7 @@ def main(
             if env_information:
                 print(
                     f"throttle: {throttle:.3f}, steering: {steering:.3f}, brake: {brake:.3f}, speed:"
-                    f" {current_speed * 3.6:.3f} km/h, target speed {target_speed:3f} km/h, obstacles: {obstacles}",
+                    f" {current_speed * 3.6:.3f} km/h, target speed {target_speed:3f} km/h, obstacles: {len(obstacles)}",
                     end="\033[0K\r",
                 )
     finally:
