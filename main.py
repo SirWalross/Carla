@@ -534,20 +534,15 @@ def main(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("host", nargs="?", default="127.0.0.1", help="IP of the host server")
-    parser.add_argument("--visualize_path", dest="visualize_path", action="store_true", help="Enable path visualization")
-    parser.add_argument("--no-collision_detection", dest="collision_detection", action="store_false", help="Disable collision detection")
-    parser.add_argument(
-        "--no-traffic_sign_detection", dest="traffic_sign_detection", action="store_false", help="Disable detection of traffic signs"
-    )
-    parser.add_argument(
-        "--no-traffic_light_detection", dest="traffic_light_detection", action="store_false", help="Disable detection of traffic lights"
-    )
-    parser.add_argument("--no-telemetry_info", dest="telemetry_info", action="store_false", help="Disable telemetry info")
-    parser.add_argument("--no-spawn_road_borders", dest="spawn_road_borders", action="store_false", help="Disable spawning of road borders")
-    parser.add_argument("--no-spawn_traffic", dest="spawn_traffic", action="store_false", help="Disable spawning of traffic")
-    parser.add_argument("--write_to_file", dest="write_to_file", action="store_true", help="Enable writing of image to file")
-    parser.add_argument("--no-display_image", dest="display_image", action="store_false", help="Disable displaying of image")
-
+    parser.add_argument("--path-visualization", dest="visualize_path", action="store_true", help="Enable path visualization")
+    parser.add_argument("--no-collision-detection", dest="collision_detection", action="store_false", help="Disable collision detection")
+    parser.add_argument("--no-sign-detection", dest="sign_detection", action="store_false", help="Disable traffic sign detection")
+    parser.add_argument("--no-light-detection", dest="light_detection", action="store_false", help="Disable traffic lights detection")
+    parser.add_argument("--no-telemetry", dest="telemetry_info", action="store_false", help="Disable telemetry info")
+    parser.add_argument("--no-road-borders", dest="spawn_road_borders", action="store_false", help="Disable spawning of road borders")
+    parser.add_argument("--no-traffic", dest="spawn_traffic", action="store_false", help="Disable spawning of traffic")
+    parser.add_argument("--output-to-file", dest="write_to_file", action="store_true", help="Enable writing of output image to file")
+    parser.add_argument("--no-display", dest="display_image", action="store_false", help="Disable displaying of image on screen")
     parser.add_argument("--number-of-vehicles", default=30, type=int, help="Number of vehicles")
     parser.add_argument("--number-of-walkers", default=10, type=int, help="Number of walkers")
 
@@ -568,8 +563,8 @@ if __name__ == "__main__":
         from pygame.locals import *
 
     collision_detection = args.collision_detection
-    traffic_sign_detection = args.traffic_sign_detection
-    traffic_light_detection = args.traffic_light_detection
+    traffic_sign_detection = args.sign_detection
+    traffic_light_detection = args.light_detection
     write_to_file = args.write_to_file
     display_image = args.display_image
 
