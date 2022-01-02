@@ -552,7 +552,7 @@ if __name__ == "__main__":
     if args.spawn_traffic:
         from generate_traffic import spawn_traffic, destroy_traffic
 
-    if args.traffic_sign_detection:
+    if args.sign_detection:
         from trafficsign import TrafficSignType, load_model, detect_traffic_sign
 
     if args.spawn_road_borders:
