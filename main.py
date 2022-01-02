@@ -21,7 +21,7 @@ TRAFFIC_LIGHT_SENSITIVITY = 0.37
 LIDAR_DISTANCE = 47.0
 ROAD_OFFSET = 50
 BORDER = 0.1  # 10% border around image
-TRAFFIC_SIGN_DETECTION_RANGE = (500, 1000)  # min and max area of sign
+TRAFFIC_SIGN_DETECTION_RANGE = (500, 1200)  # min and max area of sign
 MAX_FRAME = 200000
 FRAME_SKIP = 20
 
@@ -416,9 +416,9 @@ def main(
     client = carla.Client(ip, 2000)
     try:
         client.set_timeout(10.0)
-        world = client.load_world("Town02")
+        world = client.load_world("Town02_Opt")
         # world = client.get_world()
-        # world.unload_map_layer(carla.MapLayer.Buildings)
+        world.unload_map_layer(carla.MapLayer.StreetLights)
         # world.unload_map_layer(carla.MapLayer.Decals)
         # world.unload_map_layer(carla.MapLayer.ParkedVehicles)
         # world.unload_map_layer(carla.MapLayer.Foliage)
