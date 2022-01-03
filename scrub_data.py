@@ -18,15 +18,17 @@ WIDTH = 1280
 HEIGHT = 720
 BORDER = 0.1
 TRAFFIC_SIGN_DETECTION_RANGE = (500, 1200)  # min and max area of sign
+FRAME_SKIP = 20
 traffic_sign = None
 vehicle = None
 
 signs = []
-current_speed = None
+current_speed = 30.0
+frame = 0
 
 def write_signs_to_disk(sign_type: float):
-    sign_type = int(3.6 * sign_type)
     global signs
+    sign_type = int(sign_type)
     for sign in signs:
         os.makedirs(f"sign/{sign_type}", exist_ok=True)
         cv2.imwrite(f"sign/{sign_type}/{shortuuid.uuid()}.png", sign)
@@ -35,6 +37,7 @@ def write_signs_to_disk(sign_type: float):
 
 
 def rgb_sensor(image):
+    global frame
     image.convert(cc.Raw)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
     array = np.reshape(array, (image.height, image.width, 4))
@@ -56,6 +59,10 @@ def rgb_sensor(image):
 
             if x + w <= WIDTH - 2 * w * BORDER and w > 16:
                 signs.append(image)
+    
+    if frame % FRAME_SKIP == 0:
+        cv2.imwrite(f"images/traffic{frame}.png", array)
+    frame += 1
 
 
 def segmentation_sensor(image):
@@ -148,18 +155,15 @@ def main(ip: str):
 
         vehicle.set_autopilot()
 
-        while time.time() - now > 60.0 * 1:
+        while time.time() - now < 60.0 * 1:
             speed = vehicle.get_speed_limit()
             if current_speed != speed:
                 current_speed = speed
                 write_signs_to_disk(current_speed)
             world.tick()
+        print(f"Elapsed time {time.time() - now}")
         raise ValueError()
     finally:
-        if segmentation is not None:
-            segmentation.destroy()
-        if rgb is not None:
-            rgb.destroy()
         if vehicle is not None:
             vehicle.destroy()
         print("Cleaned up")
