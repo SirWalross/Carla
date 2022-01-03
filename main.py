@@ -21,7 +21,7 @@ TRAFFIC_LIGHT_SENSITIVITY = 0.37
 LIDAR_DISTANCE = 47.0
 ROAD_OFFSET = 50
 BORDER = 0.1  # 10% border around image
-TRAFFIC_SIGN_DETECTION_RANGE = (500, 1200)  # min and max area of sign
+TRAFFIC_SIGN_DETECTION_RANGE = (1000, 2000)  # min and max area of sign
 MAX_FRAME = 200000
 FRAME_SKIP = 20
 
@@ -183,23 +183,31 @@ def rgb_sensor(image):
 
         if area >= TRAFFIC_SIGN_DETECTION_RANGE[0] and area <= TRAFFIC_SIGN_DETECTION_RANGE[1]:
             x, y, w, h = cv2.boundingRect(traffic_sign)
-            x1 = int(np.clip(x - w * BORDER, 0, WIDTH))
-            x2 = int(np.clip(x + w * (1 + BORDER), 0, WIDTH))
-            y1 = int(np.clip(y - h * BORDER, 0, HEIGHT))
-            y2 = int(np.clip(y + h * (1 + BORDER), 0, HEIGHT))
-            prediction = detect_traffic_sign(raw_image[y1:y2, x1:x2, :])
+            if (
+                w > 40
+                and h > 40
+                and x - w * BORDER > 20
+                and x + w * (1 + BORDER) < WIDTH - 20
+                and y - h * BORDER > 20
+                and y + h * (1 + BORDER) < HEIGHT - 20
+            ):
+                x1 = int(np.clip(x - w * BORDER, 0, WIDTH))
+                x2 = int(np.clip(x + w * (1 + BORDER), 0, WIDTH))
+                y1 = int(np.clip(y - h * BORDER, 0, HEIGHT))
+                y2 = int(np.clip(y + h * (1 + BORDER), 0, HEIGHT))
+                prediction = detect_traffic_sign(raw_image[y1:y2, x1:x2, :])
 
-            point = (max(traffic_sign[:, 0, 0]), min(traffic_sign[:, 0, 1]))
-            color = (255, 255, 255) if prediction != TrafficSignType.INVALID_SIGN else (255, 0, 0)
-            cv2.drawContours(array, [traffic_sign], -1, color, 1)
-            cv2.putText(array, f"{prediction.name},{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, color, 1)
+                point = (max(traffic_sign[:, 0, 0]), min(traffic_sign[:, 0, 1]))
+                color = (255, 255, 255) if prediction != TrafficSignType.INVALID_SIGN else (255, 0, 0)
+                cv2.drawContours(array, [traffic_sign], -1, color, 1)
+                cv2.putText(array, f"{prediction.name},{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, color, 1)
 
-            if prediction == TrafficSignType.SPEED_30_SIGN:
-                target_speed = 30
-            elif prediction == TrafficSignType.SPEED_60_SIGN:
-                target_speed = 60
-            elif prediction == TrafficSignType.SPEED_90_SIGN:
-                target_speed = 90
+                if prediction == TrafficSignType.SPEED_30_SIGN:
+                    target_speed = 30
+                elif prediction == TrafficSignType.SPEED_60_SIGN:
+                    target_speed = 60
+                elif prediction == TrafficSignType.SPEED_90_SIGN:
+                    target_speed = 90
 
     # overlay current speed sign
     current_sign = speed_30_sign if target_speed == 30 else (speed_60_sign if target_speed == 60 else speed_90_sign)
