@@ -21,7 +21,7 @@ TRAFFIC_LIGHT_SENSITIVITY = 0.37
 LIDAR_DISTANCE = 47.0
 ROAD_OFFSET = 50
 BORDER = 0.1  # 10% border around image
-TRAFFIC_SIGN_DETECTION_RANGE = (1000, 2000)  # min and max area of sign
+TRAFFIC_SIGN_DETECTION_RANGE = (1000, 1800)  # min and max area of sign
 MAX_FRAME = 200000
 FRAME_SKIP = 20
 
@@ -53,7 +53,7 @@ obstacles: List[Tuple[float, float, np.ndarray]] = []
 last_lidar_data: "LidarData" = None
 
 # controllers
-steering_pid = PID(2.0, 0, 0, (-1, 1))
+steering_pid = PID(1.8, 0, 0, (-1, 1))
 throttle_pid = PID(0.8, 0, 0, (-1, 1))
 
 # enable/disable certain features
@@ -515,6 +515,8 @@ def main(
                     f" {current_speed * 3.6:.3f} km/h, target speed {target_speed:3f} km/h, obstacles: {len(obstacles)}",
                     end="\033[0K\r",
                 )
+    except KeyboardInterrupt:
+        pass
     finally:
         if generate_traffic:
             destroy_traffic(client)
