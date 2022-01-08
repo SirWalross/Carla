@@ -15,11 +15,15 @@ counter = 0
 
 
 def load_model():
+    """Load the model for traffic sign detection.
+    """
     global model
     model = keras.models.load_model("traffic_sign.h5")
 
 
 class TrafficSignType(Enum):
+    """The types of traffic signs.
+    """
     SPEED_30_SIGN = 0
     # SPEED_50_SIGN = 2
     SPEED_60_SIGN = 1
@@ -34,6 +38,15 @@ class TrafficSignType(Enum):
 
 
 def detect_traffic_sign(image: np.ndarray) -> TrafficSignType:
+    """Detect a traffic sign.
+
+    Args:
+        image (np.ndarray): The image of traffic sign.
+
+    Returns:
+        TrafficSignType: The type of traffic sign detected.
+    """
+
     global counter
     image = tf.image.resize(image, (64, 64)) / 255.0
     counter += 1

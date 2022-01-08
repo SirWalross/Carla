@@ -40,13 +40,10 @@ prev_sensor_data = None
 steering = 0
 throttle = 0
 brake = 0
-distance_waypoint = 0
-waypoint = None
 traffic_light = None
 traffic_sign = None
 road_contour = None
 detected_red_traffic_light = False
-waypoint_deadzone = 0
 target_speed = 30  # km/h
 frame = 0
 obstacles: List[Tuple[float, float, np.ndarray]] = []
@@ -66,6 +63,12 @@ write_to_file = True
 
 class LidarData:
     def __init__(self, lidar_data):
+        """Converts the lidar data to a point cloud.
+
+        Args:
+            lidar_data (carla.SemanticLidarMeasurement): The lidar data from the sensor.
+        """
+
         self.point_cloud = self._convert_to_point_cloud(lidar_data)
         self.timestamp = lidar_data.timestamp
 
@@ -76,7 +79,7 @@ class LidarData:
         self.object_indices = np.unique(self.point_cloud["object_index"])
 
     @staticmethod
-    def valid_points(points: np.ndarray, tags: np.ndarray) -> np.ndarray:
+    def _valid_points(points: np.ndarray, tags: np.ndarray) -> np.ndarray:
         if np.abs(steering) <= 1e-4:
             return np.logical_and.reduce(
                 [
@@ -106,10 +109,19 @@ class LidarData:
         p_cloud = np.frombuffer(lidar_data.raw_data, dtype=dtype)
         tags = p_cloud["tag"]
         positions = np.array(p_cloud["position"])
-        return p_cloud[LidarData.valid_points(positions, tags)]
+        return p_cloud[LidarData._valid_points(positions, tags)]
 
-    def query_object_index(self, object_index) -> Tuple[float, np.ndarray]:
-        """Return the distance to the nearest point with object index `object_index` and the position"""
+    def query_object_index(self, object_index: int) -> Tuple[float, np.ndarray]:
+        """Return the distance to the nearest point with object index `object_index` and its position.
+
+        Args:
+            object_index (int): The object index of the object to query to distances to.
+
+        Returns:
+            Tuple[float, np.ndarray]: Returns the closest distance and the position of the object.
+                If no point of the object is found, a distance of `np.inf` is returned.
+        """
+
         object_indices = self.point_cloud["object_index"] != object_index
         distances = np.copy(self.distances)
         distances[object_indices] = np.inf
@@ -124,6 +136,14 @@ class LidarData:
 
 
 def lidar_sensor(lidar_data):
+    """Iterates over all lidar data, to check for possible collisions with vehicles or walkers.
+
+    Appends any potential collisions to `obstacles`.
+
+    Args:
+        lidar_data (carla.SemanticLidarMeasurement): The lidar data from the semantic lidar sensor
+    """
+
     global obstacles, last_lidar_data
     if collision_detection:
         lidar_data = LidarData(lidar_data)
@@ -139,6 +159,15 @@ def lidar_sensor(lidar_data):
 
 
 def rgb_sensor(image):
+    """Displays the sensor data or output it to a file.
+
+    Checks for traffic lights, if enabled and sets `detected_red_traffic_light` if a red traffic light was detected.
+    Also checks for traffic signs, if enabled and updates `target_speed` with a new target_speed.
+
+    Args:
+        image (carla.Image): The image data from the rgb sensor
+    """
+
     global detected_red_traffic_light, target_speed, frame
     image.convert(cc.Raw)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
@@ -226,6 +255,14 @@ def rgb_sensor(image):
 
 
 def segmentation_sensor(image):
+    """Detects the road contour for steering and detects traffic signs and lights if enabled.
+
+    Writes the current road contour into `road_countour`, as well as the current traffic sign and light into
+    `traffic_sign` and `traffic_light` respectively, if enabled.
+
+    Args:
+        image (carla.Image): The image data from the semantic segmentation sensor.
+    """
     global traffic_light, traffic_sign, road_contour
     image.convert(cc.CityScapesPalette)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
@@ -318,7 +355,13 @@ def segmentation_sensor(image):
 
 
 def gnss_sensor(sensor_data):
-    global prev_sensor_data, current_speed, distance_waypoint
+    """Reads the current data from the gnss sensor and updates the `current_speed` of the vehicle.
+
+    Args:
+        sensor_data (carla.GnssMeasurement): The measurement data from the gnss sensor.
+    """
+
+    global prev_sensor_data, current_speed
     if prev_sensor_data is not None:
         dx = sensor_data.transform.location.distance(prev_sensor_data.transform.location)
         dt = sensor_data.timestamp - prev_sensor_data.timestamp
@@ -326,11 +369,16 @@ def gnss_sensor(sensor_data):
         prev_sensor_data = sensor_data
     else:
         prev_sensor_data = sensor_data
-    if waypoint is not None:
-        distance_waypoint = sensor_data.transform.location.distance(waypoint.transform.location)
 
 
 def vehicle_control() -> Tuple[float, float, float]:
+    """Performs the vehicle control based on the `road_contour`, the `target_speed` and `detected_red_traffic_light`.
+
+    Uses two pid controllers to perform control of the vehicle.
+
+    Returns:
+        Tuple[float, float, float]: The throttle, steering and braking outputs of the controller.
+    """
 
     # calulate steering value
     if road_contour is not None:
@@ -363,6 +411,7 @@ def vehicle_control() -> Tuple[float, float, float]:
 
 
 def visualize_path():
+    """Visualizes the path of the vehicle based on its current throttle and steering values."""
     t = np.arange(0, LIDAR_DISTANCE / 5, 0.1)
     points = np.zeros((t.shape[0], 9))
 
@@ -412,6 +461,17 @@ def main(
     number_of_vehicles: int,
     number_of_walkers: int,
 ):
+    """Main method
+
+    Args:
+        ip (str): IP adress of the carla server.
+        enable_path_visualization (bool): Wether to enable path visualization of the vehicle.
+        telemetry_info (bool): Wether to output telemetry info of the vehicle.
+        road_borders (bool): Wether to spawn road borders.
+        generate_traffic (bool): Wether to generate vehicle and walker traffic.
+        number_of_vehicles (int): Number of vehicles to spawn.
+        number_of_walkers (int): Number of walkers to spawn.
+    """
     global waypoint, waypoint_deadzone, lidar, world, vehicle, screen
 
     if traffic_sign_detection:
@@ -422,6 +482,13 @@ def main(
         screen = pygame.display.set_mode((WIDTH, HEIGHT))
 
     client = carla.Client(ip, 2000)
+
+    gnss = None
+    rgb = None
+    segmentation = None
+    lidar = None
+    vehicle = None
+
     try:
         client.set_timeout(10.0)
         world = client.load_world("Town02_Opt")
@@ -439,7 +506,6 @@ def main(
         settings.fixed_delta_seconds = 0.05
         world.apply_settings(settings)
 
-        map = world.get_map()
         blueprint_library = world.get_blueprint_library()
 
         spawn_point = carla.Transform(carla.Location(-5.38, 280.0, 1.0), carla.Rotation(yaw=90.0))
@@ -521,16 +587,16 @@ def main(
         if generate_traffic:
             destroy_traffic(client)
 
-        try:
+        if gnss is not None:
             gnss.destroy()
+        if segmentation is not None:
             segmentation.destroy()
+        if rgb is not None:
             rgb.destroy()
+        if lidar is not None:
             lidar.destroy()
+        if vehicle is not None:
             vehicle.destroy()
-        except UnboundLocalError:
-            pass
-        except NameError:
-            pass
 
         try:
             pygame.quit()

@@ -11,6 +11,16 @@ all_id = []
 
 
 def spawn_traffic(client, number_of_vehicles: int = 30, number_of_walkers: int = 10):
+    """Spawn traffic.
+
+    Args:
+        client (carla.Client): The carla client.
+        number_of_vehicles (int, optional): The number of vehicles to spawn. Defaults to 30.
+        number_of_walkers (int, optional): The number of walkers to spawn. Defaults to 10.
+
+    Raises:
+        RuntimeError: Raises a runtime error if spawning of the traffic failed.
+    """
     global all_actors
 
     world = client.get_world()
@@ -59,7 +69,7 @@ def spawn_traffic(client, number_of_vehicles: int = 30, number_of_walkers: int =
 
     for response in client.apply_batch_sync(batch, True):
         if response.error:
-            raise ValueError()
+            raise RuntimeError()
         else:
             vehicles_list.append(response.actor_id)
 
@@ -133,6 +143,11 @@ def spawn_traffic(client, number_of_vehicles: int = 30, number_of_walkers: int =
         all_actors[i].set_max_speed(float(walker_speed[int(i / 2)]))
 
 def destroy_traffic(client):
+    """Destroy the spawned traffic
+
+    Args:
+        client (carla.Client): The carla client.
+    """
     print("\ndestroying %d vehicles" % len(vehicles_list))
     client.apply_batch([carla.command.DestroyActor(x) for x in vehicles_list])
 
