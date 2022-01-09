@@ -1,3 +1,4 @@
+from builtins import print
 import argparse
 import math
 import random
@@ -20,10 +21,15 @@ ROAD_WIDTH = 3.0
 TRAFFIC_LIGHT_SENSITIVITY = 0.37
 LIDAR_DISTANCE = 47.0
 ROAD_OFFSET = 50
+ROAD_OFFSET_LEFT = 175
 BORDER = 0.1  # 10% border around image
 TRAFFIC_SIGN_DETECTION_RANGE = (1000, 1800)  # min and max area of sign
 MAX_FRAME = 200000
 FRAME_SKIP = 20
+ROAD_SIGN_DETECTION_RANGE = (WIDTH/3, WIDTH * 2/3)
+ROAD_SIGN_DETECTION_AREA = (5000, 10000, 5000)
+ROAD_DETECTION_AREA = 35000
+FRAME_COOLDOWN = 85
 
 # traffic signs
 speed_30_sign = cv2.imread("speed_signs/speed_30_sign.png", -1)
@@ -42,10 +48,12 @@ throttle = 0
 brake = 0
 traffic_light = None
 traffic_sign = None
+road_sign_case = None
 road_contour = None
 detected_red_traffic_light = False
 target_speed = 30  # km/h
 frame = 0
+current_cooldown = 0
 obstacles: List[Tuple[float, float, np.ndarray]] = []
 last_lidar_data: "LidarData" = None
 
@@ -263,12 +271,75 @@ def segmentation_sensor(image):
     Args:
         image (carla.Image): The image data from the semantic segmentation sensor.
     """
-    global traffic_light, traffic_sign, road_contour
+    global traffic_light, traffic_sign, road_contour, road_sign_case, current_cooldown
     image.convert(cc.CityScapesPalette)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
     array = np.reshape(array, (image.height, image.width, 4))
     array = array[:, :, :3]
     array = array[:, :, ::-1]
+
+    # Road Sign Detection
+    road_sign = np.copy(array)
+    mask = cv2.inRange(road_sign, np.array([169, 119, 49]), np.array([171, 121, 51]))
+    
+    base_colour = np.full_like(road_sign, np.array([255, 255, 255]))
+    road_sign = cv2.bitwise_and(base_colour, base_colour, mask=mask)
+
+    # convert image to greyscale
+    road_sign = cv2.cvtColor(road_sign, cv2.COLOR_BGR2GRAY)
+
+    # contour detection
+    contours, _ = cv2.findContours(road_sign, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+
+    if current_cooldown > 0:
+        current_cooldown -= 1
+    elif len(contours) > 0:
+        road_sign_case = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(road_sign_case)
+        
+
+        moment = cv2.moments(road_sign_case)
+        cX = int(moment["m10"] / moment["m00"])
+        if cX <= ROAD_SIGN_DETECTION_RANGE[0] and area >= ROAD_SIGN_DETECTION_AREA[0]:
+            road_sign_case = 1
+            current_cooldown = FRAME_COOLDOWN
+        elif cX <= ROAD_SIGN_DETECTION_RANGE[1] and area >= ROAD_SIGN_DETECTION_AREA[1]:
+            road_decision = np.copy(array)
+            mask = cv2.inRange(road_decision, np.array([127, 63, 127]), np.array([129, 65, 129]))
+            
+            base_colour = np.full_like(road_decision, np.array([255, 255, 255]))
+            road_decision = cv2.bitwise_and(base_colour, base_colour, mask=mask)
+
+            stencil = np.zeros_like(road_decision[:, :, 0])
+
+            # specify coordinates of the polygon
+            polygon = np.array([[5*WIDTH//8, HEIGHT], [5*WIDTH//8, HEIGHT - 400], [WIDTH , HEIGHT - 400], [WIDTH, HEIGHT]])
+            
+            # fill polygon with ones
+            cv2.fillConvexPoly(stencil, polygon, 255)
+
+            # apply stencil
+            road_decision = cv2.bitwise_and(road_decision, road_decision, mask=stencil)
+            road_decision = cv2.cvtColor(road_decision, cv2.COLOR_BGR2GRAY)
+
+            area = np.average(road_decision) * WIDTH * HEIGHT / 255
+            print(area)
+            if area >= ROAD_DETECTION_AREA:
+                road_sign_case = 1
+            else: 
+                road_sign_case = 3
+                
+            current_cooldown = FRAME_COOLDOWN
+            cv2.imwrite(f"images/road_decision{frame}.png", road_decision)
+
+        elif cX > ROAD_SIGN_DETECTION_RANGE[1] and area >= ROAD_SIGN_DETECTION_AREA[2]:
+            road_sign_case = 3
+            current_cooldown = FRAME_COOLDOWN
+        else:
+            road_sign_case = 0
+    else:
+        road_sign_case = 0
+
 
     # Road Outline
     road_image = np.copy(array)
@@ -289,7 +360,10 @@ def segmentation_sensor(image):
     stencil = np.zeros_like(road_image[:, :, 0])
 
     # specify coordinates of the polygon
-    polygon = np.array([[200, HEIGHT], [200, HEIGHT - 200], [WIDTH - 200, HEIGHT - 200], [WIDTH - 200, HEIGHT]])
+    if road_sign_case == 3:
+        polygon = np.array([[0, HEIGHT], [0, HEIGHT - 200], [WIDTH - 400, HEIGHT - 200], [WIDTH - 400, HEIGHT]])
+    else:
+        polygon = np.array([[200, HEIGHT], [200, HEIGHT - 200], [WIDTH - 200, HEIGHT - 200], [WIDTH - 200, HEIGHT]])
 
     # fill polygon with ones
     cv2.fillConvexPoly(stencil, polygon, 255)
@@ -385,7 +459,10 @@ def vehicle_control() -> Tuple[float, float, float]:
         moment = cv2.moments(road_contour)
         cX = int(moment["m10"] / moment["m00"])
 
-        diff = cX - WIDTH / 2 + ROAD_OFFSET
+        if road_sign_case == 3:
+            diff = cX - WIDTH / 2 + ROAD_OFFSET_LEFT
+        else:
+            diff = cX - WIDTH / 2 + ROAD_OFFSET
         steering = steering_pid(diff / 400, 0)
     else:
         steering = 0
@@ -494,11 +571,11 @@ def main(
         world = client.load_world("Town02_Opt")
         # world = client.get_world()
         world.unload_map_layer(carla.MapLayer.StreetLights)
-        # world.unload_map_layer(carla.MapLayer.Decals)
+        world.unload_map_layer(carla.MapLayer.Decals)
         # world.unload_map_layer(carla.MapLayer.ParkedVehicles)
         # world.unload_map_layer(carla.MapLayer.Foliage)
         # world.unload_map_layer(carla.MapLayer.Walls)
-        # world.unload_map_layer(carla.MapLayer.Props)
+        world.unload_map_layer(carla.MapLayer.Props)
 
         # Settings
         settings = world.get_settings()
@@ -508,8 +585,8 @@ def main(
 
         blueprint_library = world.get_blueprint_library()
 
-        spawn_point = carla.Transform(carla.Location(-5.38, 280.0, 1.0), carla.Rotation(yaw=90.0))
-        vehicle_bp = blueprint_library.find("vehicle.tesla.model3")
+        spawn_point = carla.Transform(carla.Location(191.76, 273.54, 1.0), carla.Rotation(yaw=-90.0))
+        vehicle_bp = blueprint_library.find("vehicle.audi.etron")
         vehicle = world.spawn_actor(vehicle_bp, spawn_point)
         print("Spawned vehicle")
 
@@ -577,9 +654,9 @@ def main(
 
             if telemetry_info:
                 print(
-                    f"throttle: {throttle:.3f}, steering: {steering:.3f}, brake: {brake:.3f}, speed:"
-                    f" {current_speed * 3.6:.3f} km/h, target speed {target_speed:3f} km/h, obstacles: {len(obstacles)}",
-                    end="\033[0K\r",
+                    f"throttle: {throttle:.3f}, steering: {steering:.3f}, brake: {brake:.3f}, current road sign:{road_sign_case}, speed:"
+                    f"  {current_speed * 3.6:.3f} km/h, target speed {target_speed:3f} km/h, obstacles: {len(obstacles)}",
+                    end="\033[0K\r", 
                 )
     except KeyboardInterrupt:
         pass

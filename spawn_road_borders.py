@@ -1,4 +1,3 @@
-import argparse
 import carla
 
 
@@ -11,14 +10,14 @@ def spawn_road_borders(world: carla.World, blueprint_library: carla.BlueprintLib
         blueprint_library (carla.BlueprintLibrary): The carla blueprint library
     """
     spawn_points = [
-        (-5.4, 184.0, 180.0),
-        (184.58, 239.0, 90.0),
-        (143.0, 239.0, -90.0),
-        (128.5, 189.5, 90.0),
-        (191.6, 181.31, 180.0),
-        (43.86, 244.53, 0.0),
-        (48.92, 189.46, -90.0),
-        (44.0, 298.5, 180.0),
+        (-5.4, 199.25, 0.0),
+        (52.73, 189.60, -90.0),
+        (52.02, 238.84, -90.0),
+        (35.89, 304.55, 90.0),
+        (191.71, 230.34, 180.0),
+        (124.97, 238.92, 90.0),
+        (125.66, 189.82, 90.0),
+        (191.71, 198.21, 0.0)
     ]
 
     for point in spawn_points:
