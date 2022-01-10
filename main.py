@@ -1,4 +1,3 @@
-from builtins import print
 import argparse
 import math
 import random
@@ -6,6 +5,8 @@ from typing import List, Tuple
 import numpy as np
 import carla
 import cv2
+import threading
+import time
 
 from carla import ColorConverter as cc
 
@@ -27,9 +28,9 @@ TRAFFIC_SIGN_DETECTION_RANGE = (1000, 1800)  # min and max area of sign
 MAX_FRAME = 200000
 FRAME_SKIP = 20
 ROAD_SIGN_DETECTION_RANGE = (WIDTH/3, WIDTH * 2/3)
-ROAD_SIGN_DETECTION_AREA = (5000, 10000, 5000)
+ROAD_SIGN_DETECTION_AREA = (5000, 12000, 5000)
 ROAD_DETECTION_AREA = 35000
-FRAME_COOLDOWN = 85
+FRAME_COOLDOWN = 75
 
 # traffic signs
 speed_30_sign = cv2.imread("speed_signs/speed_30_sign.png", -1)
@@ -56,6 +57,10 @@ frame = 0
 current_cooldown = 0
 obstacles: List[Tuple[float, float, np.ndarray]] = []
 last_lidar_data: "LidarData" = None
+
+# threading
+all_sensors_done = 4
+lock = threading.Lock()
 
 # controllers
 steering_pid = PID(1.8, 0, 0, (-1, 1))
@@ -152,7 +157,10 @@ def lidar_sensor(lidar_data):
         lidar_data (carla.SemanticLidarMeasurement): The lidar data from the semantic lidar sensor
     """
 
-    global obstacles, last_lidar_data
+    global obstacles, last_lidar_data, all_sensors_done
+    with lock:
+        all_sensors_done -= 1
+
     if collision_detection:
         lidar_data = LidarData(lidar_data)
         if last_lidar_data is not None:
@@ -165,7 +173,6 @@ def lidar_sensor(lidar_data):
             obstacles.sort(key=lambda obstacle: obstacle[0])
         last_lidar_data = lidar_data
 
-
 def rgb_sensor(image):
     """Displays the sensor data or output it to a file.
 
@@ -176,7 +183,10 @@ def rgb_sensor(image):
         image (carla.Image): The image data from the rgb sensor
     """
 
-    global detected_red_traffic_light, target_speed, frame
+    global detected_red_traffic_light, target_speed, frame, all_sensors_done
+    with lock:
+        all_sensors_done -= 1
+
     image.convert(cc.Raw)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
     array = np.reshape(array, (image.height, image.width, 4))
@@ -271,7 +281,10 @@ def segmentation_sensor(image):
     Args:
         image (carla.Image): The image data from the semantic segmentation sensor.
     """
-    global traffic_light, traffic_sign, road_contour, road_sign_case, current_cooldown
+    global traffic_light, traffic_sign, road_contour, road_sign_case, current_cooldown, all_sensors_done
+    with lock:
+        all_sensors_done -= 1
+
     image.convert(cc.CityScapesPalette)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
     array = np.reshape(array, (image.height, image.width, 4))
@@ -292,12 +305,12 @@ def segmentation_sensor(image):
     contours, _ = cv2.findContours(road_sign, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
 
     if current_cooldown > 0:
-        current_cooldown -= 1
+        if brake == 0:
+            current_cooldown -= 1
     elif len(contours) > 0:
         road_sign_case = max(contours, key=cv2.contourArea)
         area = cv2.contourArea(road_sign_case)
         
-
         moment = cv2.moments(road_sign_case)
         cX = int(moment["m10"] / moment["m00"])
         if cX <= ROAD_SIGN_DETECTION_RANGE[0] and area >= ROAD_SIGN_DETECTION_AREA[0]:
@@ -323,7 +336,6 @@ def segmentation_sensor(image):
             road_decision = cv2.cvtColor(road_decision, cv2.COLOR_BGR2GRAY)
 
             area = np.average(road_decision) * WIDTH * HEIGHT / 255
-            print(area)
             if area >= ROAD_DETECTION_AREA:
                 road_sign_case = 1
             else: 
@@ -435,7 +447,10 @@ def gnss_sensor(sensor_data):
         sensor_data (carla.GnssMeasurement): The measurement data from the gnss sensor.
     """
 
-    global prev_sensor_data, current_speed
+    global prev_sensor_data, current_speed, all_sensors_done
+    with lock:
+        all_sensors_done -= 1
+
     if prev_sensor_data is not None:
         dx = sensor_data.transform.location.distance(prev_sensor_data.transform.location)
         dt = sensor_data.timestamp - prev_sensor_data.timestamp
@@ -461,9 +476,10 @@ def vehicle_control() -> Tuple[float, float, float]:
 
         if road_sign_case == 3:
             diff = cX - WIDTH / 2 + ROAD_OFFSET_LEFT
+            steering = steering_pid(diff / 500, 0)
         else:
             diff = cX - WIDTH / 2 + ROAD_OFFSET
-        steering = steering_pid(diff / 400, 0)
+            steering = steering_pid(diff / 420, 0)
     else:
         steering = 0
 
@@ -549,7 +565,7 @@ def main(
         number_of_vehicles (int): Number of vehicles to spawn.
         number_of_walkers (int): Number of walkers to spawn.
     """
-    global waypoint, waypoint_deadzone, lidar, world, vehicle, screen
+    global waypoint, waypoint_deadzone, lidar, world, vehicle, screen, all_sensors_done, brake, throttle, steering
 
     if traffic_sign_detection:
         load_model()
@@ -586,7 +602,7 @@ def main(
         blueprint_library = world.get_blueprint_library()
 
         spawn_point = carla.Transform(carla.Location(191.76, 273.54, 1.0), carla.Rotation(yaw=-90.0))
-        vehicle_bp = blueprint_library.find("vehicle.audi.etron")
+        vehicle_bp = blueprint_library.find("vehicle.tesla.model3")
         vehicle = world.spawn_actor(vehicle_bp, spawn_point)
         print("Spawned vehicle")
 
@@ -621,17 +637,18 @@ def main(
         gnss.listen(gnss_sensor)
 
         # Lidar sensor
-        if collision_detection:
-            lidar_transform = carla.Transform(carla.Location(z=1.9))
-            lidar_bp = blueprint_library.find("sensor.lidar.ray_cast_semantic")
-            lidar_bp.set_attribute("upper_fov", "30.0")
-            lidar_bp.set_attribute("lower_fov", "-25.0")
-            lidar_bp.set_attribute("channels", "64.0")
-            lidar_bp.set_attribute("range", str(LIDAR_DISTANCE))
-            lidar_bp.set_attribute("points_per_second", "100000.0")
-            lidar_bp.set_attribute("rotation_frequency", "10")
-            lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
-            lidar.listen(lidar_sensor)
+        lidar_transform = carla.Transform(carla.Location(z=1.9))
+        lidar_bp = blueprint_library.find("sensor.lidar.ray_cast_semantic")
+        lidar_bp.set_attribute("upper_fov", "30.0")
+        lidar_bp.set_attribute("lower_fov", "-25.0")
+        lidar_bp.set_attribute("channels", "64.0")
+        lidar_bp.set_attribute("range", str(LIDAR_DISTANCE))
+        lidar_bp.set_attribute("points_per_second", "100000.0")
+        lidar_bp.set_attribute("rotation_frequency", "10")
+        lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
+        lidar.listen(lidar_sensor)
+
+        world.tick()
 
         while frame < MAX_FRAME:
             throttle, steering, brake = vehicle_control()
@@ -642,7 +659,14 @@ def main(
 
             if enable_path_visualization:
                 visualize_path()
-            world.tick()
+            with lock:
+                if all_sensors_done > 0:
+                    time.sleep(0.02)
+                    continue
+                else:
+                    all_sensors_done = 4
+                    world.tick()
+                    
 
             if display_image:
                 pygame.display.flip()
@@ -654,7 +678,7 @@ def main(
 
             if telemetry_info:
                 print(
-                    f"throttle: {throttle:.3f}, steering: {steering:.3f}, brake: {brake:.3f}, current road sign:{road_sign_case}, speed:"
+                    f"frame: {frame}, throttle: {throttle:.3f}, steering: {steering:.3f}, brake: {brake:.3f}, road sign: {road_sign_case}, speed:"
                     f"  {current_speed * 3.6:.3f} km/h, target speed {target_speed:3f} km/h, obstacles: {len(obstacles)}",
                     end="\033[0K\r", 
                 )
