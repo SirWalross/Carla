@@ -20,7 +20,7 @@ def spawn_road_borders(world: carla.World, blueprint_library: carla.BlueprintLib
         (191.71, 198.21, 0.0)
     ]
 
+    sign_bp = blueprint_library.find("static.prop.trafficwarning")
     for point in spawn_points:
         spawn_point = carla.Transform(carla.Location(*point[:2], 0.22), carla.Rotation(yaw=point[2]))
-        sign_bp = blueprint_library.find("static.prop.trafficwarning")
         world.spawn_actor(sign_bp, spawn_point)

@@ -1,41 +1,59 @@
 import argparse
 import math
 import random
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 import numpy as np
 import carla
 import cv2
 import threading
 import time
+import traceback
+
 
 from carla import ColorConverter as cc
 
 from pid import PID
+from trafficsign import TrafficSignType, load_model, detect_traffic_sign
 
 random.seed(42)
 
 
 # CONSTANTS
 WIDTH = 1280
+"""width of the image sensors"""
 HEIGHT = 720
+"""height of the image sensors"""
 ROAD_WIDTH = 3.0
+"""width of a lane for collision detection"""
 TRAFFIC_LIGHT_SENSITIVITY = 0.37
+""" average red color for traffic light to be classified as red"""
 LIDAR_DISTANCE = 47.0
+"""maximum distance for lidar sensor"""
 ROAD_OFFSET = 50
+"""offset from the middle of the road for right turn steering"""
 ROAD_OFFSET_LEFT = 175
-BORDER = 0.1  # 10% border around image
-TRAFFIC_SIGN_DETECTION_RANGE = (1000, 1800)  # min and max area of sign
-MAX_FRAME = 200000
-FRAME_SKIP = 20
-ROAD_SIGN_DETECTION_RANGE = (WIDTH/3, WIDTH * 2/3)
+"""offset from the middle of the road for left turn steering"""
+BORDER = 0.1
+"""border around traffic sign image in percent"""
+TRAFFIC_SIGN_DETECTION_RANGE = (1000, 1800)
+"""min and max area of sign"""
+MAX_FRAME = 6000
+"""maximum number of frames to run agent for"""
+FRAME_SKIP = 50
+"""number of frames to skip before outputting one"""
+ROAD_SIGN_DETECTION_RANGE = (WIDTH / 3, WIDTH * 2 / 3)
+"""values for classifying road signs in left, middle or right"""
 ROAD_SIGN_DETECTION_AREA = (5000, 12000, 5000)
-ROAD_DETECTION_AREA = 35000
+"""min areas of road signs for left, middle and right"""
+ROAD_DETECTION_AREA = 40000
+"""minium area of road to be classifyied as an right turn"""
 FRAME_COOLDOWN = 75
+"""number of frames to be in a road sign mode"""
 
 # traffic signs
-speed_30_sign = cv2.imread("speed_signs/speed_30_sign.png", -1)
-speed_60_sign = cv2.imread("speed_signs/speed_60_sign.png", -1)
-speed_90_sign = cv2.imread("speed_signs/speed_90_sign.png", -1)
+SPEED_30_SIGN = cv2.imread("speed_signs/speed_30_sign.png", -1)
+SPEED_60_SIGN = cv2.imread("speed_signs/speed_60_sign.png", -1)
+SPEED_90_SIGN = cv2.imread("speed_signs/speed_90_sign.png", -1)
 
 screen = None
 
@@ -59,8 +77,8 @@ obstacles: List[Tuple[float, float, np.ndarray]] = []
 last_lidar_data: "LidarData" = None
 
 # threading
-all_sensors_done = 4
-lock = threading.Lock()
+render_barrier = threading.Barrier(4)
+tick_event = threading.Event()
 
 # controllers
 steering_pid = PID(1.8, 0, 0, (-1, 1))
@@ -124,7 +142,7 @@ class LidarData:
         positions = np.array(p_cloud["position"])
         return p_cloud[LidarData._valid_points(positions, tags)]
 
-    def query_object_index(self, object_index: int) -> Tuple[float, np.ndarray]:
+    def query_object_index(self, object_index: int) -> Tuple[float, Optional[np.ndarray]]:
         """Return the distance to the nearest point with object index `object_index` and its position.
 
         Args:
@@ -145,7 +163,7 @@ class LidarData:
             try:
                 return np.inf, self.point_cloud["position"][0]
             except IndexError:
-                return np.inf, [0, 0, 0]
+                return np.inf, None
 
 
 def lidar_sensor(lidar_data):
@@ -157,9 +175,7 @@ def lidar_sensor(lidar_data):
         lidar_data (carla.SemanticLidarMeasurement): The lidar data from the semantic lidar sensor
     """
 
-    global obstacles, last_lidar_data, all_sensors_done
-    with lock:
-        all_sensors_done -= 1
+    global obstacles, last_lidar_data
 
     if collision_detection:
         lidar_data = LidarData(lidar_data)
@@ -173,6 +189,9 @@ def lidar_sensor(lidar_data):
             obstacles.sort(key=lambda obstacle: obstacle[0])
         last_lidar_data = lidar_data
 
+    render_barrier.wait()
+
+
 def rgb_sensor(image):
     """Displays the sensor data or output it to a file.
 
@@ -183,9 +202,9 @@ def rgb_sensor(image):
         image (carla.Image): The image data from the rgb sensor
     """
 
-    global detected_red_traffic_light, target_speed, frame, all_sensors_done
-    with lock:
-        all_sensors_done -= 1
+    global detected_red_traffic_light, target_speed
+
+    render_barrier.wait()
 
     image.convert(cc.Raw)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
@@ -225,6 +244,8 @@ def rgb_sensor(image):
     else:
         detected_red_traffic_light = False
 
+    current_sign = SPEED_30_SIGN if target_speed == 30 else (SPEED_60_SIGN if target_speed == 60 else SPEED_90_SIGN)
+
     if traffic_sign is not None:
         area = cv2.contourArea(traffic_sign)
 
@@ -257,7 +278,7 @@ def rgb_sensor(image):
                     target_speed = 90
 
     # overlay current speed sign
-    current_sign = speed_30_sign if target_speed == 30 else (speed_60_sign if target_speed == 60 else speed_90_sign)
+    current_sign = SPEED_30_SIGN if target_speed == 30 else (SPEED_60_SIGN if target_speed == 60 else SPEED_90_SIGN)
     x1, x2 = 0, current_sign.shape[1]
     y1, y2 = HEIGHT - current_sign.shape[0], HEIGHT
     array[y1:y2, x1:x2] = current_sign[:, :, 2::-1]
@@ -269,7 +290,9 @@ def rgb_sensor(image):
     if write_to_file:
         if frame % FRAME_SKIP == 0:
             cv2.imwrite(f"images/traffic{frame}.png", array[:, :, ::-1])
-    frame += 1
+
+    render_barrier.reset()
+    tick_event.set()
 
 
 def segmentation_sensor(image):
@@ -281,9 +304,7 @@ def segmentation_sensor(image):
     Args:
         image (carla.Image): The image data from the semantic segmentation sensor.
     """
-    global traffic_light, traffic_sign, road_contour, road_sign_case, current_cooldown, all_sensors_done
-    with lock:
-        all_sensors_done -= 1
+    global traffic_light, traffic_sign, road_contour, road_sign_case, current_cooldown
 
     image.convert(cc.CityScapesPalette)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
@@ -294,7 +315,7 @@ def segmentation_sensor(image):
     # Road Sign Detection
     road_sign = np.copy(array)
     mask = cv2.inRange(road_sign, np.array([169, 119, 49]), np.array([171, 121, 51]))
-    
+
     base_colour = np.full_like(road_sign, np.array([255, 255, 255]))
     road_sign = cv2.bitwise_and(base_colour, base_colour, mask=mask)
 
@@ -308,10 +329,10 @@ def segmentation_sensor(image):
         if brake == 0:
             current_cooldown -= 1
     elif len(contours) > 0:
-        road_sign_case = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(road_sign_case)
-        
-        moment = cv2.moments(road_sign_case)
+        road_sign = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(road_sign)
+
+        moment = cv2.moments(road_sign)
         cX = int(moment["m10"] / moment["m00"])
         if cX <= ROAD_SIGN_DETECTION_RANGE[0] and area >= ROAD_SIGN_DETECTION_AREA[0]:
             road_sign_case = 1
@@ -319,15 +340,15 @@ def segmentation_sensor(image):
         elif cX <= ROAD_SIGN_DETECTION_RANGE[1] and area >= ROAD_SIGN_DETECTION_AREA[1]:
             road_decision = np.copy(array)
             mask = cv2.inRange(road_decision, np.array([127, 63, 127]), np.array([129, 65, 129]))
-            
+
             base_colour = np.full_like(road_decision, np.array([255, 255, 255]))
             road_decision = cv2.bitwise_and(base_colour, base_colour, mask=mask)
 
             stencil = np.zeros_like(road_decision[:, :, 0])
 
             # specify coordinates of the polygon
-            polygon = np.array([[5*WIDTH//8, HEIGHT], [5*WIDTH//8, HEIGHT - 400], [WIDTH , HEIGHT - 400], [WIDTH, HEIGHT]])
-            
+            polygon = np.array([[5 * WIDTH // 8, HEIGHT], [5 * WIDTH // 8, HEIGHT - 400], [WIDTH, HEIGHT - 400], [WIDTH, HEIGHT]])
+
             # fill polygon with ones
             cv2.fillConvexPoly(stencil, polygon, 255)
 
@@ -338,11 +359,11 @@ def segmentation_sensor(image):
             area = np.average(road_decision) * WIDTH * HEIGHT / 255
             if area >= ROAD_DETECTION_AREA:
                 road_sign_case = 1
-            else: 
+            else:
                 road_sign_case = 3
-                
+
             current_cooldown = FRAME_COOLDOWN
-            cv2.imwrite(f"images/road_decision{frame}.png", road_decision)
+            cv2.imwrite(f"images/road_decision{frame}-{area}-{'left' if area >= ROAD_DETECTION_AREA else 'right'}.png", road_decision)
 
         elif cX > ROAD_SIGN_DETECTION_RANGE[1] and area >= ROAD_SIGN_DETECTION_AREA[2]:
             road_sign_case = 3
@@ -351,7 +372,6 @@ def segmentation_sensor(image):
             road_sign_case = 0
     else:
         road_sign_case = 0
-
 
     # Road Outline
     road_image = np.copy(array)
@@ -411,33 +431,34 @@ def segmentation_sensor(image):
         traffic_light = None
 
     # Traffic sign
-    if traffic_sign_detection:
-        traffic_image = np.copy(array)
-        # preparing the mask to overlay
-        mask = cv2.inRange(traffic_image, np.array([219, 219, 0]), np.array([221, 221, 1]))
+    traffic_image = np.copy(array)
+    # preparing the mask to overlay
+    mask = cv2.inRange(traffic_image, np.array([219, 219, 0]), np.array([221, 221, 1]))
 
-        base_colour = np.full_like(traffic_image, np.array([255, 255, 255]))
-        traffic_image = cv2.bitwise_and(base_colour, base_colour, mask=mask)
+    base_colour = np.full_like(traffic_image, np.array([255, 255, 255]))
+    traffic_image = cv2.bitwise_and(base_colour, base_colour, mask=mask)
 
-        # create a zero array
-        stencil = np.zeros_like(traffic_image[:, :, 0])
+    # create a zero array
+    stencil = np.zeros_like(traffic_image[:, :, 0])
 
-        # specify coordinates of the polygon
-        polygon = np.array([[int(WIDTH / 2), 200], [int(WIDTH / 2), HEIGHT], [WIDTH, HEIGHT], [WIDTH, 200]])
-        cv2.fillConvexPoly(stencil, polygon, 255)
+    # specify coordinates of the polygon
+    polygon = np.array([[int(WIDTH / 2), 200], [int(WIDTH / 2), HEIGHT], [WIDTH, HEIGHT], [WIDTH, 200]])
+    cv2.fillConvexPoly(stencil, polygon, 255)
 
-        # convert image to greyscale
-        traffic_image = cv2.bitwise_and(traffic_image, traffic_image, mask=stencil)
-        traffic_image = cv2.cvtColor(traffic_image, cv2.COLOR_BGR2GRAY)
+    # convert image to greyscale
+    traffic_image = cv2.bitwise_and(traffic_image, traffic_image, mask=stencil)
+    traffic_image = cv2.cvtColor(traffic_image, cv2.COLOR_BGR2GRAY)
 
-        # contour detection
-        contours, _ = cv2.findContours(traffic_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+    # contour detection
+    contours, _ = cv2.findContours(traffic_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
 
-        if len(contours) > 0:
-            traffic_sign = max(contours, key=cv2.contourArea)
-            # cv2.drawContours(traffic_image, [traffic_sign], -1, (255, 0, 0), 1)
-        else:
-            traffic_sign = None
+    if len(contours) > 0:
+        traffic_sign = max(contours, key=cv2.contourArea)
+        # cv2.drawContours(traffic_image, [traffic_sign], -1, (255, 0, 0), 1)
+    else:
+        traffic_sign = None
+
+    render_barrier.wait()
 
 
 def gnss_sensor(sensor_data):
@@ -447,9 +468,7 @@ def gnss_sensor(sensor_data):
         sensor_data (carla.GnssMeasurement): The measurement data from the gnss sensor.
     """
 
-    global prev_sensor_data, current_speed, all_sensors_done
-    with lock:
-        all_sensors_done -= 1
+    global prev_sensor_data, current_speed
 
     if prev_sensor_data is not None:
         dx = sensor_data.transform.location.distance(prev_sensor_data.transform.location)
@@ -458,6 +477,8 @@ def gnss_sensor(sensor_data):
         prev_sensor_data = sensor_data
     else:
         prev_sensor_data = sensor_data
+
+    render_barrier.wait()
 
 
 def vehicle_control() -> Tuple[float, float, float]:
@@ -484,10 +505,11 @@ def vehicle_control() -> Tuple[float, float, float]:
         steering = 0
 
     # calculate speed delta
+    new_target_speed = target_speed if traffic_sign_detection else 30.0
     if len(obstacles) > 0:
-        speed_delta = min(target_speed / 3.6, obstacles[0][1] + (obstacles[0][0] - 7) / 2) - current_speed
+        speed_delta = min(new_target_speed / 3.6, obstacles[0][1] + (obstacles[0][0] - 7) / 2) - current_speed
     else:
-        speed_delta = target_speed / 3.6 - current_speed
+        speed_delta = new_target_speed / 3.6 - current_speed
 
     # calculate throttle and brake from speed_delta
     throttle = throttle_pid(speed_delta, 0, (-1, 1 / (1 + abs(steering))))
@@ -565,10 +587,9 @@ def main(
         number_of_vehicles (int): Number of vehicles to spawn.
         number_of_walkers (int): Number of walkers to spawn.
     """
-    global waypoint, waypoint_deadzone, lidar, world, vehicle, screen, all_sensors_done, brake, throttle, steering
+    global waypoint, waypoint_deadzone, lidar, world, vehicle, screen, brake, throttle, steering, frame
 
-    if traffic_sign_detection:
-        load_model()
+    load_model()
 
     if display_image:
         pygame.init()
@@ -659,14 +680,11 @@ def main(
 
             if enable_path_visualization:
                 visualize_path()
-            with lock:
-                if all_sensors_done > 0:
-                    time.sleep(0.02)
-                    continue
-                else:
-                    all_sensors_done = 4
-                    world.tick()
-                    
+
+            tick_event.wait()
+            tick_event.clear()
+            frame += 1
+            world.tick()
 
             if display_image:
                 pygame.display.flip()
@@ -678,13 +696,14 @@ def main(
 
             if telemetry_info:
                 print(
-                    f"frame: {frame}, throttle: {throttle:.3f}, steering: {steering:.3f}, brake: {brake:.3f}, road sign: {road_sign_case}, speed:"
-                    f"  {current_speed * 3.6:.3f} km/h, target speed {target_speed:3f} km/h, obstacles: {len(obstacles)}",
-                    end="\033[0K\r", 
+                    f"frame: {frame}, throttle: {throttle:.3f}, steering: {steering:.3f}, brake: {brake:.3f}, road sign: {road_sign_case},"
+                    f" speed:  {current_speed * 3.6:.3f} km/h, target speed {target_speed:3f} km/h, obstacles: {len(obstacles)}",
+                    end="\033[0K\r",
                 )
     except KeyboardInterrupt:
         pass
     finally:
+        traceback.print_exc()
         if generate_traffic:
             destroy_traffic(client)
 
@@ -728,9 +747,6 @@ if __name__ == "__main__":
     # import needed modules
     if args.spawn_traffic:
         from generate_traffic import spawn_traffic, destroy_traffic
-
-    if args.sign_detection:
-        from trafficsign import TrafficSignType, load_model, detect_traffic_sign
 
     if args.spawn_road_borders:
         from spawn_road_borders import spawn_road_borders
