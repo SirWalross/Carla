@@ -244,8 +244,6 @@ def rgb_sensor(image):
     else:
         detected_red_traffic_light = False
 
-    current_sign = SPEED_30_SIGN if target_speed == 30 else (SPEED_60_SIGN if target_speed == 60 else SPEED_90_SIGN)
-
     if traffic_sign is not None:
         area = cv2.contourArea(traffic_sign)
 

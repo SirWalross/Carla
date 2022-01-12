@@ -9,3 +9,5 @@ parse_xodr.py
 StreetDetection.py
 lane_detection.py
 scrub_data.py
+train_traffic_sign.py
+**/*.xodr
