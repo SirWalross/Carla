@@ -48,12 +48,12 @@ def detect_traffic_sign(image: np.ndarray) -> TrafficSignType:
     """
 
     global counter
-    image = tf.image.resize(image, (64, 64)) / 255.0
+    image = tf.image.resize(image, (128, 128)) / 255.0
     counter += 1
     traffic_sign = model.predict(image.numpy()[None, :, :, ::-1])
     try:
         traffic_sign_type = TrafficSignType(np.argmax(traffic_sign))
-        if np.min(traffic_sign) > 0.2:
+        if np.min(traffic_sign) > 0.2 and traffic_sign[1] < 0.7:
             raise ValueError()
         elif traffic_sign_type == TrafficSignType.SPEED_30_SIGN and np.max(traffic_sign) < 0.92:
             traffic_sign_type = TrafficSignType.SPEED_90_SIGN

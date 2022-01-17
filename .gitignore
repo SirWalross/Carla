@@ -3,6 +3,7 @@ __pycache__
 .vscode/settings.json
 image_detection.py
 *.png
+*.ppm
 !speed_signs/*.png
 opendrive.py
 parse_xodr.py
