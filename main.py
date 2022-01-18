@@ -29,9 +29,9 @@ TRAFFIC_LIGHT_SENSITIVITY = 0.37
 """ average red color for traffic light to be classified as red"""
 LIDAR_DISTANCE = 47.0
 """maximum distance for lidar sensor"""
-ROAD_OFFSET = 50
+ROAD_OFFSET = 35
 """offset from the middle of the road for right turn steering"""
-ROAD_OFFSET_LEFT = 175
+ROAD_OFFSET_LEFT = 170
 """offset from the middle of the road for left turn steering"""
 BORDER = 0.1
 """border around traffic sign image in percent"""
@@ -41,11 +41,11 @@ MAX_FRAME = 20000
 """maximum number of frames to run agent for"""
 FRAME_SKIP = 50
 """number of frames to skip before outputting one"""
-ROAD_SIGN_DETECTION_RANGE = (WIDTH / 3, WIDTH * 2 / 3)
+ROAD_SIGN_DETECTION_RANGE = (WIDTH / 4, WIDTH * 2 / 3)
 """values for classifying road signs in left, middle or right"""
 ROAD_SIGN_DETECTION_AREA = (7000, 12000, 7000)
 """min areas of road signs for left, middle and right"""
-ROAD_DETECTION_AREA = 40000
+ROAD_DETECTION_AREA = 42000
 """minium area of road to be classifyied as an right turn"""
 FRAME_COOLDOWN = 65
 """number of frames to be in a road sign mode"""
@@ -82,7 +82,7 @@ tick_event = threading.Event()
 
 # controllers
 steering_pid = PID(1.8, 0, 0, (-1, 1))
-throttle_pid = PID(0.8, 0, 0, (-1, 1))
+throttle_pid = PID(0.8, 0.1, 0.2, (-1, 1))
 
 # enable/disable certain features
 traffic_sign_detection = True
@@ -292,7 +292,7 @@ def rgb_sensor(image):
     render_barrier.reset()
     tick_event.set()
 
-def road_sign_detection(image):
+def _road_sign_contour(image):
     global traffic_light, traffic_sign, road_contour, road_sign_case, current_cooldown
     base_colour = np.full_like(image, np.array([255, 255, 255]))
     stencil = np.zeros_like(image[:, :, 0])
@@ -352,7 +352,7 @@ def road_sign_detection(image):
     else:
         road_sign_case = 0
 
-def road_outline(image):
+def _road_contour(image):
     global traffic_light, traffic_sign, road_contour, road_sign_case, current_cooldown
     
     masks = [
@@ -372,9 +372,9 @@ def road_outline(image):
 
     # specify coordinates of the polygon
     if road_sign_case == 3:
-        polygon = np.array([[0, HEIGHT], [0, HEIGHT - 200], [WIDTH - 400, HEIGHT - 200], [WIDTH - 400, HEIGHT]])
+        polygon = np.array([[0, HEIGHT], [0, HEIGHT - 150], [WIDTH - 400, HEIGHT - 150], [WIDTH - 400, HEIGHT]])
     else:
-        polygon = np.array([[200, HEIGHT], [200, HEIGHT - 200], [WIDTH - 200, HEIGHT - 200], [WIDTH - 200, HEIGHT]])
+        polygon = np.array([[200, HEIGHT], [200, HEIGHT - 150], [WIDTH - 200, HEIGHT - 150], [WIDTH - 200, HEIGHT]])
 
     # fill polygon with ones
     cv2.fillConvexPoly(stencil, polygon, 255)
@@ -390,7 +390,7 @@ def road_outline(image):
     else:
         road_contour = None
 
-def detect_traffic_light(image):
+def _traffic_light_contour(image):
     global traffic_light, traffic_sign, road_contour, road_sign_case, current_cooldown
 
     base_colour = np.full_like(image, np.array([255, 255, 255]))
@@ -411,7 +411,7 @@ def detect_traffic_light(image):
     else:
         traffic_light = None
         
-def detect_traffic_sign(image):
+def _traffic_sign_contour(image):
     global traffic_light, traffic_sign, road_contour, road_sign_case, current_cooldown
 
     base_colour = np.full_like(image, np.array([255, 255, 255]))
@@ -457,7 +457,7 @@ def segmentation_sensor(image):
     array = array[:, :, :3]
     array = array[:, :, ::-1]
 
-    functions = [road_sign_detection, road_outline, detect_traffic_light, detect_traffic_sign]
+    functions = [_road_sign_contour, _road_contour, _traffic_light_contour, _traffic_sign_contour]
     threads = []
     for function in functions:
         thread = threading.Thread(target=function, args=(array,))
@@ -510,7 +510,7 @@ def vehicle_control() -> Tuple[float, float, float]:
             steering = steering_pid(diff / 490, 0)
         else:
             diff = cX - WIDTH / 2 + ROAD_OFFSET
-            steering = steering_pid(diff / 420, 0)
+            steering = steering_pid(diff / 350, 0)
     else:
         steering = 0
 
@@ -632,7 +632,7 @@ def main(
 
         blueprint_library = world.get_blueprint_library()
 
-        spawn_point = carla.Transform(carla.Location(191.76, 273.54, 1.0), carla.Rotation(yaw=90.0))
+        spawn_point = carla.Transform(carla.Location(191.76, 273.54, 1.0), carla.Rotation(yaw=-90.0))
         vehicle_bp = blueprint_library.find("vehicle.tesla.model3")
         vehicle = world.spawn_actor(vehicle_bp, spawn_point)
         print("Spawned vehicle")
@@ -645,18 +645,18 @@ def main(
 
         # RGB camera
         rgb_bp = blueprint_library.find("sensor.camera.rgb")
-        rgb_bp.set_attribute("image_size_x", "1280")
-        rgb_bp.set_attribute("image_size_y", "720")
+        rgb_bp.set_attribute("image_size_x", f"{WIDTH}")
+        rgb_bp.set_attribute("image_size_y", f"{HEIGHT}")
         rgb_bp.set_attribute("fov", "60")
         rgb_bp.set_attribute("sensor_tick", "0.02")
-        relative_transform = carla.Transform(carla.Location(x=1.2, y=0, z=1.7), carla.Rotation())
+        relative_transform = carla.Transform(carla.Location(x=-0.62, y=0, z=1.7), carla.Rotation())
         rgb = world.spawn_actor(rgb_bp, relative_transform, vehicle)
         rgb.listen(rgb_sensor)
 
         # Segmentation camera
         segmentation_bp = blueprint_library.find("sensor.camera.semantic_segmentation")
-        segmentation_bp.set_attribute("image_size_x", "1280")
-        segmentation_bp.set_attribute("image_size_y", "720")
+        segmentation_bp.set_attribute("image_size_x", f"{WIDTH}")
+        segmentation_bp.set_attribute("image_size_y", f"{HEIGHT}")
         segmentation_bp.set_attribute("fov", "60")
         segmentation_bp.set_attribute("sensor_tick", "0.02")
         segmentation = world.spawn_actor(segmentation_bp, relative_transform, vehicle)
