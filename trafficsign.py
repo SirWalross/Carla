@@ -48,7 +48,7 @@ def detect_traffic_sign(image: np.ndarray) -> TrafficSignType:
     """
 
     global counter
-    image = tf.image.resize(image, (128, 128)) / 255.0
+    image = tf.image.resize(image, (64, 64)) / 255.0
     counter += 1
     traffic_sign = model.predict(image.numpy()[None, :, :, ::-1])
     try:
