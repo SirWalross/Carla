@@ -6,7 +6,7 @@ class PID:
     """Simple pid controller."""
 
     def __init__(
-        self, kp: float = 1.0, ki: float = 0.0, kd: float = 0.0, output_limits: Tuple[float, float] = (-1, 1), dt: float = 0.05
+        self, kp: float = 1.0, ki: float = 0.0, kd: float = 0.0, output_limits: Tuple[float, float] = (-1, 1), dt: float = 0.05, delay: int = 0
     ) -> None:
         """[summary]
 
@@ -16,12 +16,15 @@ class PID:
             kd (float, optional): The differential gain. Defaults to 0.0.
             output_limits (Tuple[float, float], optional): Output limits of the controller. Defaults to (-1, 1).
             dt (float, optional): The time difference between each output of the controller. Defaults to 0.05.
+            delay (int, optional): Number of ticks to delay output by. Defaults to 0.
         """
         self.kp, self.ki, self.kd = kp, ki, kd
         self.output_limits = output_limits
         self._last_input = 0
         self._integral = 0
         self.dt = dt
+        self.buffer = [0] * delay
+        self.delay = delay
 
     def __call__(self, input_: float, setpoint: float, output_limits: Optional[Tuple[float, float]] = None, verbose: bool = False) -> float:
         """Generate output of the controller.
@@ -54,6 +57,11 @@ class PID:
         # Compute output
         output = self._proportional + self._integral + self._derivative
         output = np.clip(output, *self.output_limits)
+
+        # delay
+        if self.delay != 0:
+            self.buffer.append(output)
+            output = self.buffer.pop(0)
 
         # Save last state
         self._last_output = output

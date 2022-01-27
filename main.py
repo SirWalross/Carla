@@ -29,24 +29,28 @@ TRAFFIC_LIGHT_SENSITIVITY = 0.37
 """ average red color for traffic light to be classified as red"""
 LIDAR_DISTANCE = 47.0
 """maximum distance for lidar sensor"""
-ROAD_OFFSET = 35
+ROAD_OFFSET = 0
 """offset from the middle of the road for right turn steering"""
 ROAD_OFFSET_LEFT = 170
 """offset from the middle of the road for left turn steering"""
+ROAD_OFFSET_MIDDLE = 49
+"""offset from the middle of the road for middle steering"""
 BORDER = 0.1
 """border around traffic sign image in percent"""
 TRAFFIC_SIGN_DETECTION_RANGE = (1000, 2000)
 """min and max area of sign"""
-MAX_FRAME = 20000
+MAX_FRAME = 5000
 """maximum number of frames to run agent for"""
-FRAME_SKIP = 50
+FRAME_SKIP = 1
 """number of frames to skip before outputting one"""
 ROAD_SIGN_DETECTION_RANGE = (WIDTH / 4, WIDTH * 2 / 3)
 """values for classifying road signs in left, middle or right"""
 ROAD_SIGN_DETECTION_AREA = (7000, 12000, 7000)
 """min areas of road signs for left, middle and right"""
-ROAD_DETECTION_AREA = 42000
-"""minium area of road to be classifyied as an right turn"""
+ROAD_DETECTION_AREA_RIGHT = 42000
+"""minium area of road to be classified as an right turn, instead of a left turn"""
+ROAD_DETECTION_AREA_LEFT = 75000
+"""minium area of road to be classified as an left turn, instead of no turn"""
 FRAME_COOLDOWN = 65
 """number of frames to be in a road sign mode"""
 
@@ -70,18 +74,20 @@ traffic_sign = None
 road_sign_case = None
 road_contour = None
 detected_red_traffic_light = False
+third_person = False
 target_speed = 30  # km/h
 frame = 0
 current_cooldown = 0
 obstacles: List[Tuple[float, float, np.ndarray]] = []
 last_lidar_data: "LidarData" = None
+last_tick = time.time()
 
 # threading
 render_barrier = threading.Barrier(4)
 tick_event = threading.Event()
 
 # controllers
-steering_pid = PID(1.8, 0, 0, (-1, 1))
+steering_pid = PID(1.8, 0, 0, (-1, 1), delay=0)
 throttle_pid = PID(0.8, 0.1, 0.2, (-1, 1))
 
 # enable/disable certain features
@@ -107,11 +113,11 @@ class LidarData:
 
         # self.distances = np.linalg.norm(self.point_cloud["position"], axis=1)
         self.distances = self.point_cloud["position"][:, 0]
-        self.object_indices = np.unique(self.point_cloud["object_index"])
+        self.object_indices: List[int] = np.unique(self.point_cloud["object_index"])
 
     @staticmethod
     def _valid_points(points: np.ndarray, tags: np.ndarray) -> np.ndarray:
-        if np.abs(steering) <= 1e-4:
+        if np.abs(steering) <= 1e-3:
             return np.logical_and.reduce(
                 [
                     np.logical_or.reduce((tags == 4, tags == 10)),
@@ -184,12 +190,32 @@ def lidar_sensor(lidar_data):
             for object_index in lidar_data.object_indices:
                 dist_new, point = lidar_data.query_object_index(object_index)
                 dist_old, _ = last_lidar_data.query_object_index(object_index)
-                if dist_old != np.inf and dist_new != np.inf:
+                if dist_old != np.inf and dist_new != np.inf and point is not None:
                     obstacles.append((dist_new, (dist_new - dist_old) / (lidar_data.timestamp - last_lidar_data.timestamp), point))
             obstacles.sort(key=lambda obstacle: obstacle[0])
         last_lidar_data = lidar_data
 
     render_barrier.wait()
+
+
+def rgb_3rd_person_sensor(image):
+    """Displays the sensor data from the 3rd person camera.
+
+    Args:
+        image (carla.Image): The image data from the 3rd person camera
+    """
+    # display image
+    image.convert(cc.Raw)
+    array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
+    array = np.reshape(array, (image.height, image.width, 4))
+    array = array[:, :, :3]
+
+    # convert from rgb to bgr
+    array = np.array(array[:, :, ::-1])
+
+    if display_image and third_person:
+        surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
+        screen.blit(surface, (0, 0))
 
 
 def rgb_sensor(image):
@@ -282,7 +308,7 @@ def rgb_sensor(image):
     array[y1:y2, x1:x2] = current_sign[:, :, 2::-1]
 
     # display image
-    if display_image:
+    if display_image and not third_person:
         surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
         screen.blit(surface, (0, 0))
     if write_to_file:
@@ -317,14 +343,18 @@ def _road_sign_contour(image):
 
         moment = cv2.moments(road_sign)
         cX = int(moment["m10"] / (moment["m00"] + 0.001))
+
+        mask = cv2.inRange(image, np.array([127, 63, 127]), np.array([129, 65, 129]))
+
+        road_decision = cv2.bitwise_and(base_colour, base_colour, mask=mask)
+
         if cX <= ROAD_SIGN_DETECTION_RANGE[0] and area >= ROAD_SIGN_DETECTION_AREA[0]:
+            # road sign detected on left side -> either right turn or straight, both using the right-hand steering
             road_sign_case = 1
             current_cooldown = FRAME_COOLDOWN
         elif cX <= ROAD_SIGN_DETECTION_RANGE[1] and area >= ROAD_SIGN_DETECTION_AREA[1]:
-            mask = cv2.inRange(image, np.array([127, 63, 127]), np.array([129, 65, 129]))
-
-            road_decision = cv2.bitwise_and(base_colour, base_colour, mask=mask)
-
+            # road sign detected in the middle -> decision of left turn or right turn based on road_area on right hand side
+            
             # specify coordinates of the polygon
             polygon = np.array([[5 * WIDTH // 8, HEIGHT], [5 * WIDTH // 8, HEIGHT - 400], [WIDTH, HEIGHT - 400], [WIDTH, HEIGHT]])
 
@@ -335,18 +365,37 @@ def _road_sign_contour(image):
             road_decision = cv2.bitwise_and(road_decision, road_decision, mask=stencil)
             road_decision = cv2.cvtColor(road_decision, cv2.COLOR_BGR2GRAY)
 
-            area = np.average(road_decision) * WIDTH * HEIGHT / 255
-            if area >= ROAD_DETECTION_AREA:
+            road_area = np.average(road_decision) * WIDTH * HEIGHT / 255
+
+            if road_area >= ROAD_DETECTION_AREA_RIGHT:
                 road_sign_case = 1
             else:
                 road_sign_case = 3
 
             current_cooldown = FRAME_COOLDOWN
-            cv2.imwrite(f"images/road_decision{frame}-{area}-{'left' if area >= ROAD_DETECTION_AREA else 'right'}.png", road_decision)
-
+            cv2.imwrite(f"images/road_decision-rh-{frame}-{road_area}-{'left' if road_area >= ROAD_DETECTION_AREA_RIGHT else 'right'}.png", road_decision)
         elif cX > ROAD_SIGN_DETECTION_RANGE[1] and area >= ROAD_SIGN_DETECTION_AREA[2]:
-            road_sign_case = 3
+            # road sign detected on right side -> decision of left turn or straight based on road_area on left hand side
+            
+            # specify coordinates of the polygon
+            polygon = np.array([[0, HEIGHT], [0, HEIGHT - 300], [WIDTH // 4, HEIGHT - 300], [WIDTH // 4, HEIGHT]])
+
+            # fill polygon with ones
+            cv2.fillConvexPoly(stencil, polygon, 255)
+
+            # apply stencil
+            road_decision = cv2.bitwise_and(road_decision, road_decision, mask=stencil)
+            road_decision = cv2.cvtColor(road_decision, cv2.COLOR_BGR2GRAY)
+
+            road_area = np.average(road_decision) * WIDTH * HEIGHT / 255
+
+            if road_area >= ROAD_DETECTION_AREA_LEFT:
+                road_sign_case = 3
+            else:
+                road_sign_case = 2
+
             current_cooldown = FRAME_COOLDOWN
+            cv2.imwrite(f"images/road_decision-lh-{frame}-{road_area}-{'left' if road_area >= ROAD_DETECTION_AREA_LEFT else 'middle'}.png", road_decision)
         else:
             road_sign_case = 0
     else:
@@ -358,8 +407,8 @@ def _road_contour(image):
     masks = [
         cv2.inRange(image, np.array([156, 233, 49]), np.array([158, 235, 51])),
         cv2.inRange(image, np.array([127, 63, 127]), np.array([129, 65, 129])),
-        # cv2.inRange(array, np.array([0, 0, 141]), np.array([1, 1, 143])),
-        # cv2.inRange(array, np.array([(219, 19, 59)]), np.array([(221, 21, 61)])),
+        cv2.inRange(image, np.array([0, 0, 141]), np.array([1, 1, 143])),
+        cv2.inRange(image, np.array([(219, 19, 59)]), np.array([(221, 21, 61)])),
     ]
     mask = masks[0]
     for m in masks[1:]:
@@ -373,8 +422,10 @@ def _road_contour(image):
     # specify coordinates of the polygon
     if road_sign_case == 3:
         polygon = np.array([[0, HEIGHT], [0, HEIGHT - 150], [WIDTH - 400, HEIGHT - 150], [WIDTH - 400, HEIGHT]])
+    elif road_sign_case == 2:
+        polygon = np.array([[300, HEIGHT], [300, HEIGHT - 150], [WIDTH - 400, HEIGHT - 150], [WIDTH - 400, HEIGHT]])
     else:
-        polygon = np.array([[200, HEIGHT], [200, HEIGHT - 150], [WIDTH - 200, HEIGHT - 150], [WIDTH - 200, HEIGHT]])
+        polygon = np.array([[200, HEIGHT], [200, HEIGHT - 50], [WIDTH - 50, HEIGHT - 50], [WIDTH - 50, HEIGHT]])
 
     # fill polygon with ones
     cv2.fillConvexPoly(stencil, polygon, 255)
@@ -464,9 +515,8 @@ def segmentation_sensor(image):
         threads.append(thread)
         thread.start()
     
-    for index, thread in enumerate(threads):
+    for thread in threads:
         thread.join()
-        # print(f"Thread {index} took {(time.time() - now) * 1000:.3f}ms")
 
     render_barrier.wait()
 
@@ -507,79 +557,38 @@ def vehicle_control() -> Tuple[float, float, float]:
 
         if road_sign_case == 3:
             diff = cX - WIDTH / 2 + ROAD_OFFSET_LEFT
-            steering = steering_pid(diff / 490, 0)
+            _steering = steering_pid(diff / 490, 0)
+        elif road_sign_case == 2:
+            diff = cX - WIDTH / 2 + ROAD_OFFSET_MIDDLE
+            _steering = steering_pid(diff / 490, 0)
         else:
             diff = cX - WIDTH / 2 + ROAD_OFFSET
-            steering = steering_pid(diff / 350, 0)
+            _steering = steering_pid(diff / 430, 0)
     else:
-        steering = 0
+        _steering = 0
 
     # calculate speed delta
     new_target_speed = target_speed if traffic_sign_detection else 30.0
     if len(obstacles) > 0:
-        speed_delta = min(new_target_speed / 3.6, obstacles[0][1] + (obstacles[0][0] - 7) / 2) - current_speed
+        speed_delta = min(new_target_speed / 3.6, obstacles[0][1] + (obstacles[0][0] - 10) * 2) - current_speed
     else:
         speed_delta = new_target_speed / 3.6 - current_speed
 
     # calculate throttle and brake from speed_delta
-    throttle = throttle_pid(speed_delta, 0, (-1, 1 / (1 + abs(steering))))
-    brake = -throttle if throttle < 0 else 0
-    throttle = throttle if throttle > 0 else 0
+    _throttle = throttle_pid(speed_delta, 0, (-1, 1 / (1 + abs(_steering))))
+    _brake = -_throttle if _throttle < 0 else 0
+    _throttle = _throttle if _throttle > 0 else 0
 
-    if brake > 0:
-        steering = 0
+    if _brake > 0:
+        _steering = 0
 
     # detected red traffic light
     if detected_red_traffic_light:
-        return 0.0, steering, 1.0
-    return throttle, steering, brake
-
-
-def visualize_path():
-    """Visualizes the path of the vehicle based on its current throttle and steering values."""
-    t = np.arange(0, LIDAR_DISTANCE / 5, 0.1)
-    points = np.zeros((t.shape[0], 9))
-
-    if np.abs(steering) <= 1e-4:
-        points[:, [0, 3, 6]] = np.array([np.copy(t) * 5, np.copy(t) * 5, np.copy(t) * 5]).T
-        points[:, [1, 4, 7]] = np.full_like(points[:, :3], [-ROAD_WIDTH / 2, 0, ROAD_WIDTH / 2])
-    else:
-        r = 8 * (1 / np.abs(steering)) * (0.8 + throttle * 0.2)
-        points[:, 0] = r * np.sin(t / r * np.pi)
-        points[:, 1] = -r * (np.cos(t / r * np.pi) - 1) * np.sign(steering)
-        r = r - ROAD_WIDTH / 2
-        points[:, 3] = r * np.sin(t / r * np.pi)
-        points[:, 4] = -r * (np.cos(t / r * np.pi) - 1) * np.sign(steering) - ROAD_WIDTH / 2
-        r = r + ROAD_WIDTH
-        points[:, 6] = r * np.sin(t / r * np.pi)
-        points[:, 7] = -r * (np.cos(t / r * np.pi) - 1) * np.sign(steering) + ROAD_WIDTH / 2
-
-    points[:, [2, 5, 8]] = np.full_like(points[:, :3], -1.8)
-
-    points = points.reshape((points.shape[0] * 3, 3))
-
-    points = np.concatenate((points, np.ones((points.shape[0], 1))), axis=1).T
-
-    lidar_2_world = lidar.get_transform().get_matrix()
-
-    # Transform the points from lidar space to world space.
-    points = np.dot(lidar_2_world, points)
-
-    # convert to global coordinate coordinate system
-
-    for i in range(points.shape[1] - 3):
-        world.debug.draw_line(
-            carla.Location(x=points[0, i], y=points[1, i], z=points[2, i]),
-            carla.Location(x=points[0, i + 3], y=points[1, i + 3], z=points[2, i + 3]),
-            0.02,
-            carla.Color(255, 0, 0),
-            0.15,
-        )
-
+        return 0.0, _steering, 1.0
+    return _throttle, _steering, _brake
 
 def main(
     ip: str,
-    enable_path_visualization: bool,
     telemetry_info: bool,
     road_borders: bool,
     generate_traffic: bool,
@@ -590,14 +599,13 @@ def main(
 
     Args:
         ip (str): IP adress of the carla server.
-        enable_path_visualization (bool): Wether to enable path visualization of the vehicle.
         telemetry_info (bool): Wether to output telemetry info of the vehicle.
         road_borders (bool): Wether to spawn road borders.
         generate_traffic (bool): Wether to generate vehicle and walker traffic.
         number_of_vehicles (int): Number of vehicles to spawn.
         number_of_walkers (int): Number of walkers to spawn.
     """
-    global waypoint, waypoint_deadzone, lidar, world, vehicle, screen, brake, throttle, steering, frame
+    global waypoint, waypoint_deadzone, lidar, world, vehicle, screen, brake, throttle, steering, frame, last_tick
 
     load_model()
 
@@ -611,6 +619,7 @@ def main(
     rgb = None
     segmentation = None
     lidar = None
+    rgb_3rd_person = None
     vehicle = None
 
     try:
@@ -632,7 +641,7 @@ def main(
 
         blueprint_library = world.get_blueprint_library()
 
-        spawn_point = carla.Transform(carla.Location(191.76, 273.54, 1.0), carla.Rotation(yaw=-90.0))
+        spawn_point = carla.Transform(carla.Location(191.76, 273.54, 1.0), carla.Rotation(yaw=90.0))
         vehicle_bp = blueprint_library.find("vehicle.tesla.model3")
         vehicle = world.spawn_actor(vehicle_bp, spawn_point)
         print("Spawned vehicle")
@@ -652,6 +661,11 @@ def main(
         relative_transform = carla.Transform(carla.Location(x=-0.62, y=0, z=1.7), carla.Rotation())
         rgb = world.spawn_actor(rgb_bp, relative_transform, vehicle)
         rgb.listen(rgb_sensor)
+        
+        # 3rd person camera
+        third_person_transform = carla.Transform(carla.Location(x=-10, y=0, z=5), carla.Rotation(-20, 0, 0))
+        rgb_3rd_person = world.spawn_actor(rgb_bp, third_person_transform, vehicle)
+        rgb_3rd_person.listen(rgb_3rd_person_sensor)
 
         # Segmentation camera
         segmentation_bp = blueprint_library.find("sensor.camera.semantic_segmentation")
@@ -674,7 +688,7 @@ def main(
         lidar_bp.set_attribute("lower_fov", "-25.0")
         lidar_bp.set_attribute("channels", "64.0")
         lidar_bp.set_attribute("range", str(LIDAR_DISTANCE))
-        lidar_bp.set_attribute("points_per_second", "100000.0")
+        lidar_bp.set_attribute("points_per_second", "500000.0")
         lidar_bp.set_attribute("rotation_frequency", "10")
         lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
         lidar.listen(lidar_sensor)
@@ -687,9 +701,6 @@ def main(
                 throttle=throttle, steer=steering, brake=brake, hand_brake=False, reverse=False, manual_gear_shift=False
             )
             vehicle.apply_control(control)
-
-            if enable_path_visualization:
-                visualize_path()
 
             tick_event.wait()
             tick_event.clear()
@@ -707,12 +718,14 @@ def main(
             if telemetry_info:
                 print(
                     f"frame: {frame:04}, throttle: {throttle:.03f}, steering: {steering:.03f}, brake: {brake:.03f}, road sign: {road_sign_case},"
-                    f" speed:  {current_speed * 3.6:.03f} km/h, target speed {target_speed:.03f} km/h, obstacles: {len(obstacles)}",
+                    f" speed:  {current_speed * 3.6:.03f} km/h, target speed {target_speed:.03f} km/h, obstacles: {len(obstacles)}, fps: {1/(time.time() - last_tick):.2f}",
                     end="\033[0K\r",
                 )
+                last_tick = time.time()
     except KeyboardInterrupt:
         pass
     finally:
+        print("")
         traceback.print_exc()
         if generate_traffic:
             destroy_traffic(client)
@@ -723,6 +736,8 @@ def main(
             segmentation.destroy()
         if rgb is not None:
             rgb.destroy()
+        if rgb_3rd_person is not None:
+            rgb_3rd_person.destory()
         if lidar is not None:
             lidar.destroy()
         if vehicle is not None:
@@ -740,7 +755,6 @@ def main(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("host", nargs="?", default="127.0.0.1", help="IP of the host server")
-    parser.add_argument("--path-visualization", dest="visualize_path", action="store_true", help="Enable path visualization")
     parser.add_argument("--no-collision-detection", dest="collision_detection", action="store_false", help="Disable collision detection")
     parser.add_argument("--no-sign-detection", dest="sign_detection", action="store_false", help="Disable traffic sign detection")
     parser.add_argument("--no-light-detection", dest="light_detection", action="store_false", help="Disable traffic lights detection")
@@ -748,6 +762,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-road-borders", dest="spawn_road_borders", action="store_false", help="Disable spawning of road borders")
     parser.add_argument("--no-traffic", dest="spawn_traffic", action="store_false", help="Disable spawning of traffic")
     parser.add_argument("--output-to-file", dest="write_to_file", action="store_true", help="Enable writing of output image to file")
+    parser.add_argument("--third-person", dest="third_person", action="store_true", help="Enable displaying of 3rd person camera")
     parser.add_argument("--no-display", dest="display_image", action="store_false", help="Disable displaying of image on screen")
     parser.add_argument("--number-of-vehicles", default=30, type=int, help="Number of vehicles")
     parser.add_argument("--number-of-walkers", default=10, type=int, help="Number of walkers")
@@ -770,10 +785,10 @@ if __name__ == "__main__":
     traffic_light_detection = args.light_detection
     write_to_file = args.write_to_file
     display_image = args.display_image
+    third_person = args.third_person
 
     main(
         args.host,
-        args.visualize_path,
         args.telemetry_info,
         args.spawn_road_borders,
         args.spawn_traffic,
