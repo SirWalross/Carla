@@ -87,7 +87,7 @@ render_barrier = threading.Barrier(4)
 tick_event = threading.Event()
 
 # controllers
-steering_pid = PID(1.8, 0, 0, (-1, 1), delay=0)
+steering_pid = PID(1.8, 0, 0, (-1, 1))
 throttle_pid = PID(0.8, 0.1, 0.2, (-1, 1))
 
 # enable/disable certain features
