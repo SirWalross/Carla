@@ -64,7 +64,7 @@ world = None
 vehicle = None
 
 current_speed = 0.0  # m/s
-prev_sensor_data = None
+prev_gnss_data = None
 steering = 0
 throttle = 0
 brake = 0
@@ -116,7 +116,7 @@ class LidarData:
 
     @staticmethod
     def _valid_points(points: np.ndarray, tags: np.ndarray) -> np.ndarray:
-        if np.abs(steering) <= 1e-4:
+        if np.abs(steering) <= 1e-2:
             return np.logical_and.reduce(
                 [
                     np.logical_or.reduce((tags == 4, tags == 10)),
@@ -127,9 +127,9 @@ class LidarData:
                 ]
             )
         else:
-            r = 6 * (1 / steering) * (0.8 + throttle * 0.2)
-            r1 = np.abs(r) + ROAD_WIDTH / 2 # left radius
-            r2 = np.abs(r) - ROAD_WIDTH / 2 # right radius
+            r = 4 * (1 / steering) * (0.8 + throttle * 0.2)
+            r1 = np.abs(r) + ROAD_WIDTH / 2  # left radius
+            r2 = np.abs(r) - ROAD_WIDTH / 2  # right radius
             radii = np.linalg.norm(points[:, :2] - [0, r], axis=1)
             return np.logical_and.reduce(
                 [
@@ -309,7 +309,15 @@ def rgb_sensor(image):
 
     # overlay obstacle count
     if obstacles:
-        cv2.putText(array, f"{obstacles[0][0]:.2f},{obstacles[0][1]:.2f},[{obstacles[0][2][0]:.2f},{obstacles[0][2][1]:.2f}]", (WIDTH - 300, 15), cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 0), 1)
+        cv2.putText(
+            array,
+            f"{obstacles[0][0]:+02.02f},{obstacles[0][1]:+02.02f},[{obstacles[0][2][0]:+02.02f},{obstacles[0][2][1]:+02.02f}],{steering:+.02f}",
+            (WIDTH - 400, 15),
+            cv2.FONT_HERSHEY_PLAIN,
+            1,
+            (0, 0, 0),
+            1,
+        )
     else:
         cv2.putText(array, "0", (WIDTH - 100, 15), cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 0), 1)
 
@@ -323,6 +331,7 @@ def rgb_sensor(image):
 
     render_barrier.reset()
     tick_event.set()
+
 
 def _road_sign_contour(image):
     global traffic_light, traffic_sign, road_contour, road_sign_case, current_cooldown
@@ -360,7 +369,7 @@ def _road_sign_contour(image):
             current_cooldown = FRAME_COOLDOWN
         elif cX <= ROAD_SIGN_DETECTION_RANGE[1] and area >= ROAD_SIGN_DETECTION_AREA[1]:
             # road sign detected in the middle -> decision of left turn or right turn based on road_area on right hand side
-            
+
             # specify coordinates of the polygon
             polygon = np.array([[5 * WIDTH // 8, HEIGHT], [5 * WIDTH // 8, HEIGHT - 400], [WIDTH, HEIGHT - 400], [WIDTH, HEIGHT]])
 
@@ -544,15 +553,21 @@ def gnss_sensor(sensor_data):
         sensor_data (carla.GnssMeasurement): The measurement data from the gnss sensor.
     """
 
-    global prev_sensor_data, current_speed
+    global prev_gnss_data, current_speed
 
-    if prev_sensor_data is not None:
-        dx = sensor_data.transform.location.distance(prev_sensor_data.transform.location)
-        dt = sensor_data.timestamp - prev_sensor_data.timestamp
+    # lat and lon to mercator
+    EARTH_RADIUS = 6378137.0
+    scale = np.cos(math.radians(sensor_data.latitude))
+    mx = scale * math.radians(sensor_data.longitude) * EARTH_RADIUS
+    my = scale * EARTH_RADIUS * np.log(np.tan((90.0 + sensor_data.latitude) * np.pi / 360.0))
+
+    if prev_gnss_data is not None:
+        dx = np.linalg.norm((mx - prev_gnss_data[0], my - prev_gnss_data[1]))
+        dt = sensor_data.timestamp - prev_gnss_data[2]
         current_speed = dx / dt
-        prev_sensor_data = sensor_data
+        prev_gnss_data = sensor_data
     else:
-        prev_sensor_data = sensor_data
+        prev_gnss_data = (mx, my, sensor_data.timestamp)
 
     render_barrier.wait()
 
@@ -734,7 +749,7 @@ def main(
                     end="\033[0K\r",
                 )
                 last_tick = time.time()
-                
+
             frame += 1
             tick_event.clear()
             world.tick()
