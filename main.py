@@ -1,3 +1,7 @@
+# Henry Thomas, Lennard Kloock
+# Vertiefung Simulation WS21/22
+# 07-02-2022
+
 import argparse
 import math
 import random
@@ -60,9 +64,6 @@ SPEED_90_SIGN = cv2.imread("speed_signs/speed_90_sign.png", -1)
 
 screen = None
 
-world = None
-vehicle = None
-
 current_speed = 0.0  # m/s
 prev_gnss_data = None
 steering = 0
@@ -73,7 +74,6 @@ traffic_sign = None
 road_sign_case = None
 road_contour = None
 detected_red_traffic_light = False
-third_person = False
 target_speed = 30  # km/h
 frame = 0
 current_cooldown = 0
@@ -95,6 +95,7 @@ traffic_light_detection = True
 collision_detection = True
 display_image = True
 write_to_file = True
+third_person = False
 
 
 class LidarData:
@@ -107,10 +108,6 @@ class LidarData:
 
         self.point_cloud = self._convert_to_point_cloud(lidar_data)
         self.timestamp = lidar_data.timestamp
-
-        # FIXME Calculate as only x-axis, should do distance in forward direction
-
-        # self.distances = np.linalg.norm(self.point_cloud["position"], axis=1)
         self.distances = self.point_cloud["position"][:, 0]
         self.object_indices: List[int] = np.unique(self.point_cloud["object_index"])
 
@@ -230,17 +227,18 @@ def rgb_sensor(image):
 
     global detected_red_traffic_light, target_speed
 
-    render_barrier.wait()
+    render_barrier.wait() # wait for all other sensors to finish processing
 
     image.convert(cc.Raw)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
     array = np.reshape(array, (image.height, image.width, 4))
     array = array[:, :, :3]
 
-    # convert from rgb to bgr
+    # convert from bgr to rgb
     array = np.array(array[:, :, ::-1])
     raw_image = np.copy(array)
 
+    # overlay road contour
     if road_contour is not None:
         cv2.drawContours(array, [road_contour], -1, (0, 0, 0), 1)
 
@@ -256,6 +254,7 @@ def rgb_sensor(image):
         average_colours = average_colours / np.sum(average_colours)
 
         point = (max(traffic_light[:, 0, 0]), min(traffic_light[:, 0, 1]))
+        # overlay traffic light information
         if average_colours[0] > TRAFFIC_LIGHT_SENSITIVITY:
             cv2.drawContours(array, [traffic_light], -1, (255, 0, 0), 1)
             cv2.putText(array, f"{average_colours[0]:.2f},{area:.0f}", point, cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 1)
@@ -311,7 +310,7 @@ def rgb_sensor(image):
     if obstacles:
         cv2.putText(
             array,
-            f"{obstacles[0][0]:+02.02f},{obstacles[0][1]:+02.02f},[{obstacles[0][2][0]:+02.02f},{obstacles[0][2][1]:+02.02f}],{steering:+.02f}",
+            f"{obstacles[0][0]:+02.02f},{obstacles[0][1]:+02.02f},[{obstacles[0][2][0]:+02.02f},{obstacles[0][2][1]:+02.02f}]",
             (WIDTH - 400, 15),
             cv2.FONT_HERSHEY_PLAIN,
             1,
@@ -320,6 +319,18 @@ def rgb_sensor(image):
         )
     else:
         cv2.putText(array, "0", (WIDTH - 100, 15), cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 0), 1)
+
+    # overlay car stats
+    cv2.putText(
+        array,
+        f"thr: {throttle:.03f}, strng: {steering:.03f}, brake: {brake:.03f}, sign:"
+        f" {road_sign_case}, speed: {current_speed * 3.6:.03f} km/h",
+        (0, 15),
+        cv2.FONT_HERSHEY_PLAIN,
+        1,
+        (0, 0, 0),
+        1,
+    )
 
     # display image
     if display_image and not third_person:
@@ -364,9 +375,30 @@ def _road_sign_contour(image):
         road_decision = cv2.bitwise_and(base_colour, base_colour, mask=mask)
 
         if cX <= ROAD_SIGN_DETECTION_RANGE[0] and area >= ROAD_SIGN_DETECTION_AREA[0]:
-            # road sign detected on left side -> either right turn or straight, both using the right-hand steering
-            road_sign_case = 1
+            # road sign detected on left side -> either right turn or straight based on road_area on right hand side
+
+            # specify coordinates of the polygon
+            polygon = np.array([[5 * WIDTH // 8, HEIGHT], [5 * WIDTH // 8, HEIGHT - 400], [WIDTH, HEIGHT - 400], [WIDTH, HEIGHT]])
+
+            # fill polygon with ones
+            cv2.fillConvexPoly(stencil, polygon, 255)
+
+            # apply stencil
+            road_decision = cv2.bitwise_and(road_decision, road_decision, mask=stencil)
+            road_decision = cv2.cvtColor(road_decision, cv2.COLOR_BGR2GRAY)
+
+            road_area = np.average(road_decision) * WIDTH * HEIGHT / 255
+
+            if road_area >= ROAD_DETECTION_AREA_RIGHT:
+                road_sign_case = 1
+            else:
+                road_sign_case = 2
+
             current_cooldown = FRAME_COOLDOWN
+            cv2.imwrite(
+                f"images/road_decision-rh-{frame}-{road_area}-{'left' if road_area >= ROAD_DETECTION_AREA_RIGHT else 'right'}.png",
+                road_decision,
+            )
         elif cX <= ROAD_SIGN_DETECTION_RANGE[1] and area >= ROAD_SIGN_DETECTION_AREA[1]:
             # road sign detected in the middle -> decision of left turn or right turn based on road_area on right hand side
 
@@ -389,7 +421,7 @@ def _road_sign_contour(image):
 
             current_cooldown = FRAME_COOLDOWN
             cv2.imwrite(
-                f"images/road_decision-rh-{frame}-{road_area}-{'left' if road_area >= ROAD_DETECTION_AREA_RIGHT else 'right'}.png",
+                f"images/road_decision-fh-{frame}-{road_area}-{'left' if road_area >= ROAD_DETECTION_AREA_RIGHT else 'right'}.png",
                 road_decision,
             )
         elif cX > ROAD_SIGN_DETECTION_RANGE[1] and area >= ROAD_SIGN_DETECTION_AREA[2]:
@@ -509,7 +541,6 @@ def _traffic_sign_contour(image):
 
     if len(contours) > 0:
         traffic_sign = max(contours, key=cv2.contourArea)
-        # cv2.drawContours(traffic_image, [traffic_sign], -1, (255, 0, 0), 1)
     else:
         traffic_sign = None
 
@@ -518,7 +549,7 @@ def segmentation_sensor(image):
     """Detects the road contour for steering and detects traffic signs and lights if enabled.
 
     Writes the current road contour into `road_countour`, as well as the current traffic sign and light into
-    `traffic_sign` and `traffic_light` respectively, if enabled.
+    `traffic_sign` and `traffic_light` respectively.
 
     Args:
         image (carla.Image): The image data from the semantic segmentation sensor.
@@ -533,6 +564,7 @@ def segmentation_sensor(image):
     array = array[:, :, :3]
     array = array[:, :, ::-1]
 
+    # run all 4 functions concurrently as they dont depend on each other
     functions = [_road_sign_contour, _road_contour, _traffic_light_contour, _traffic_sign_contour]
     threads = []
     for function in functions:
@@ -634,7 +666,7 @@ def main(
         number_of_vehicles (int): Number of vehicles to spawn.
         number_of_walkers (int): Number of walkers to spawn.
     """
-    global waypoint, waypoint_deadzone, lidar, world, vehicle, screen, brake, throttle, steering, frame, last_tick
+    global waypoint, waypoint_deadzone, lidar, screen, brake, throttle, steering, frame, last_tick
 
     load_model()
 
@@ -655,12 +687,12 @@ def main(
         client.set_timeout(10.0)
         world = client.load_world("Town02_Opt")
         # world = client.get_world()
-        world.unload_map_layer(carla.MapLayer.StreetLights)
-        world.unload_map_layer(carla.MapLayer.Decals)
+        # world.unload_map_layer(carla.MapLayer.StreetLights)
+        # world.unload_map_layer(carla.MapLayer.Decals)
         # world.unload_map_layer(carla.MapLayer.ParkedVehicles)
         # world.unload_map_layer(carla.MapLayer.Foliage)
         # world.unload_map_layer(carla.MapLayer.Walls)
-        world.unload_map_layer(carla.MapLayer.Props)
+        # world.unload_map_layer(carla.MapLayer.Props)
 
         # Settings
         settings = world.get_settings()
@@ -725,7 +757,7 @@ def main(
         world.tick()
 
         while frame < MAX_FRAME:
-            tick_event.wait()
+            tick_event.wait() # wait for rgb_sensor to finish
 
             throttle, steering, brake = vehicle_control()
             control = carla.VehicleControl(

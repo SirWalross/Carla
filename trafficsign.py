@@ -25,14 +25,7 @@ class TrafficSignType(Enum):
     """The types of traffic signs."""
 
     SPEED_30_SIGN = 1
-    # SPEED_50_SIGN = 2
     SPEED_60_SIGN = 3
-    # SPEED_70_SIGN = 4
-    # SPEED_80_SIGN = 5
-    # SPEED_100_SIGN = 7
-    # SPEED_120_SIGN = 8
-    # PRIORITY_ONCE_SIGN = 11
-    # PRIORITY_SIGN = 12
     INVALID_SIGN = 6
     SPEED_90_SIGN = 5
 
@@ -53,13 +46,19 @@ def detect_traffic_sign(image: np.ndarray) -> TrafficSignType:
     traffic_sign = model.predict(image.numpy()[None, :, :, ::-1])[0]
     vals = ""
     for val in traffic_sign.tolist():
-        vals += f"{val:.2f}, "
+        vals += f"{val:.2f},"
     try:
         traffic_sign_type = TrafficSignType(np.argmax(traffic_sign))
-        if traffic_sign_type == TrafficSignType.SPEED_30_SIGN and traffic_sign[1] < 0.5:
+        if traffic_sign_type == TrafficSignType.SPEED_30_SIGN and traffic_sign[1] < 0.6:
+            # sometimes missclassifies speed 60 sign as speed 30 sign
             traffic_sign_type = TrafficSignType.SPEED_60_SIGN
         cv2.imwrite(f"signs/traffic{counter}{traffic_sign_type.name}[{vals[:-2]}].png", image.numpy()[:, :, ::-1] * 255)
         return traffic_sign_type
     except ValueError:
+        if np.argmax(traffic_sign) == 0 and traffic_sign[3] > 0.2:
+            # sometimes missclassifies speed 60 sign as an invalid sign
+            traffic_sign_type = TrafficSignType.SPEED_60_SIGN
+            cv2.imwrite(f"signs/traffic{counter}{traffic_sign_type.name}[{vals[:-2]}].png", image.numpy()[:, :, ::-1] * 255)
+            return traffic_sign_type
         cv2.imwrite(f"signs/traffic{counter}invalid[{vals[:-2]}].png", image.numpy()[:, :, ::-1] * 255)
         return TrafficSignType.INVALID_SIGN
