@@ -56,6 +56,8 @@ ROAD_DETECTION_AREA_LEFT = 75000
 """minium area of road to be classified as an left turn, instead of no turn"""
 FRAME_COOLDOWN = 65
 """number of frames to be in a road sign mode"""
+ROAD_SIGN_AREA_RATIO = 1.05
+"""ratio for deciding between road sign and other moving objects"""
 
 # traffic signs
 SPEED_30_SIGN = cv2.imread("speed_signs/speed_30_sign.png", -1)
@@ -108,7 +110,7 @@ class LidarData:
 
         self.point_cloud = self._convert_to_point_cloud(lidar_data)
         self.timestamp = lidar_data.timestamp
-        self.distances = self.point_cloud["position"][:, 0]
+        self.distances = np.linalg.norm(self.point_cloud["position"][:, :2], axis=1)
         self.object_indices: List[int] = np.unique(self.point_cloud["object_index"])
 
     @staticmethod
@@ -355,10 +357,10 @@ def _road_sign_contour(image):
     road_sign = cv2.bitwise_and(base_colour, base_colour, mask=mask)
 
     # convert image to greyscale
-    road_sign = cv2.cvtColor(road_sign, cv2.COLOR_BGR2GRAY)
+    road_sign_image = cv2.cvtColor(road_sign, cv2.COLOR_BGR2GRAY)
 
     # contour detection
-    contours, _ = cv2.findContours(road_sign, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+    contours, _ = cv2.findContours(road_sign_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
 
     if current_cooldown > 0:
         if brake == 0:
@@ -367,12 +369,24 @@ def _road_sign_contour(image):
         road_sign = max(contours, key=cv2.contourArea)
         area = cv2.contourArea(road_sign)
 
+        road_sign_stencil = stencil.copy()
+        cv2.drawContours(road_sign_stencil, [road_sign], -1, 255, -1)
+        road_sign_image = cv2.bitwise_and(road_sign_image, road_sign_image, mask=road_sign_stencil)
+
         moment = cv2.moments(road_sign)
         cX = int(moment["m10"] / (moment["m00"] + 0.001))
+
+        ratio = np.sum(road_sign_stencil) / np.sum(road_sign_image)
+        if ratio < ROAD_SIGN_AREA_RATIO:
+            road_sign_case = 0
+            return
 
         mask = cv2.inRange(image, np.array([127, 63, 127]), np.array([129, 65, 129]))
 
         road_decision = cv2.bitwise_and(base_colour, base_colour, mask=mask)
+
+        image = image.copy()
+        cv2.drawContours(image, [road_sign], -1, (255, 255, 255), 1)
 
         if cX <= ROAD_SIGN_DETECTION_RANGE[0] and area >= ROAD_SIGN_DETECTION_AREA[0]:
             # road sign detected on left side -> either right turn or straight based on road_area on right hand side
@@ -597,9 +611,7 @@ def gnss_sensor(sensor_data):
         dx = np.linalg.norm((mx - prev_gnss_data[0], my - prev_gnss_data[1]))
         dt = sensor_data.timestamp - prev_gnss_data[2]
         current_speed = dx / dt
-        prev_gnss_data = sensor_data
-    else:
-        prev_gnss_data = (mx, my, sensor_data.timestamp)
+    prev_gnss_data = (mx, my, sensor_data.timestamp)
 
     render_barrier.wait()
 
