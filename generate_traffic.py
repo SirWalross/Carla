@@ -142,6 +142,7 @@ def spawn_traffic(client, number_of_vehicles: int = 30, number_of_walkers: int =
         # max speed
         all_actors[i].set_max_speed(float(walker_speed[int(i / 2)]))
 
+
 def destroy_traffic(client):
     """Destroy the spawned traffic
 

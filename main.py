@@ -363,7 +363,7 @@ def _road_sign_contour(image):
     contours, _ = cv2.findContours(road_sign_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
 
     if current_cooldown > 0:
-        if brake == 0:
+        if current_speed * 3.6 > 10 and brake == 0:
             current_cooldown -= 1
     elif len(contours) > 0 and road_sign_case == 0:
         road_sign = max(contours, key=cv2.contourArea)
@@ -757,11 +757,11 @@ def main(
         # Lidar sensor
         lidar_transform = carla.Transform(carla.Location(z=1.9))
         lidar_bp = blueprint_library.find("sensor.lidar.ray_cast_semantic")
-        lidar_bp.set_attribute("upper_fov", "30.0")
-        lidar_bp.set_attribute("lower_fov", "-25.0")
+        lidar_bp.set_attribute("upper_fov", "20.0")
+        lidar_bp.set_attribute("lower_fov", "-20.0")
         lidar_bp.set_attribute("channels", "256.0")
         lidar_bp.set_attribute("range", str(LIDAR_DISTANCE))
-        lidar_bp.set_attribute("points_per_second", "500000.0")
+        lidar_bp.set_attribute("points_per_second", "1000000.0")
         lidar_bp.set_attribute("rotation_frequency", "20")
         lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
         lidar.listen(lidar_sensor)
@@ -839,8 +839,8 @@ if __name__ == "__main__":
     parser.add_argument("--output-to-file", dest="write_to_file", action="store_true", help="Enable writing of output image to file")
     parser.add_argument("--third-person", dest="third_person", action="store_true", help="Enable displaying of 3rd person camera")
     parser.add_argument("--no-display", dest="display_image", action="store_false", help="Disable displaying of image on screen")
-    parser.add_argument("--number-of-vehicles", default=30, type=int, help="Number of vehicles")
-    parser.add_argument("--number-of-walkers", default=10, type=int, help="Number of walkers")
+    parser.add_argument("--number-of-vehicles", default=40, type=int, help="Number of vehicles")
+    parser.add_argument("--number-of-walkers", default=30, type=int, help="Number of walkers")
 
     args = parser.parse_args()
 

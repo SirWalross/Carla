@@ -15,7 +15,14 @@ maxX = 96
 maxY = 96
 
 trainDatagen = ImageDataGenerator(
-    rotation_range=30, rescale=1.0 / 255, width_shift_range=0.2, height_shift_range=0.2, shear_range=0.4, zoom_range=0.2, validation_split=0.1, brightness_range=[0.95, 1.1]
+    rotation_range=30,
+    rescale=1.0 / 255,
+    width_shift_range=0.2,
+    height_shift_range=0.2,
+    shear_range=0.4,
+    zoom_range=0.2,
+    validation_split=0.1,
+    brightness_range=[0.95, 1.1],
 )
 
 trainGenerator = trainDatagen.flow_from_directory(
@@ -37,6 +44,7 @@ validationGenerator = trainDatagen.flow_from_directory(
     shuffle=True,
     subset="validation",
 )
+
 
 def get_model():
     early_stop = keras.callbacks.EarlyStopping(monitor="val_loss", patience=50, verbose=False, restore_best_weights=True)
@@ -70,12 +78,7 @@ try:
     raise OSError()
 except OSError:
     model, callbacks = get_model()
-    history = model.fit(
-        trainGenerator,
-        epochs=8,
-        callbacks=callbacks,
-        validation_data=validationGenerator
-    )
+    history = model.fit(trainGenerator, epochs=8, callbacks=callbacks, validation_data=validationGenerator)
 
 testDatagen = ImageDataGenerator(rescale=1.0 / 255)
 testDatagen = testDatagen.flow_from_directory(
@@ -84,4 +87,3 @@ testDatagen = testDatagen.flow_from_directory(
 
 
 print(model.evaluate(testDatagen))
-

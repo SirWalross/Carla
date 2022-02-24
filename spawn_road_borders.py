@@ -17,7 +17,7 @@ def spawn_road_borders(world: carla.World, blueprint_library: carla.BlueprintLib
         (189.71, 230.34, 180.0),
         (124.97, 240.92, 90.0),
         (125.66, 191.82, 90.0),
-        (193.71, 198.21, 0.0)
+        (193.71, 198.21, 0.0),
     ]
 
     sign_bp = blueprint_library.find("static.prop.trafficwarning")
