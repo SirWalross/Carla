@@ -1,3 +1,7 @@
+"""
+Adapted from carla pythonapi examples generate_traffic.py
+"""
+
 import time
 
 import carla

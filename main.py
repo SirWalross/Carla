@@ -1,6 +1,6 @@
 # Henry Thomas, Lennard Kloock
 # Vertiefung Simulation WS21/22
-# 07-02-2022
+# 27-02-2022
 
 import argparse
 import math
@@ -26,6 +26,8 @@ WIDTH = 1280
 """width of the image sensors"""
 HEIGHT = 720
 """height of the image sensors"""
+WORLD_TICK_RATE = 20
+"""number of ticks per second for carla world"""
 ROAD_WIDTH = 4.0
 """width of a lane for collision detection"""
 TRAFFIC_LIGHT_SENSITIVITY = 0.37
@@ -39,15 +41,15 @@ ROAD_OFFSET_LEFT = 170
 ROAD_OFFSET_MIDDLE = 50
 """offset from the middle of the road for middle steering"""
 BORDER = 0.1
-"""border around traffic sign image"""
+"""amount of border around traffic sign image"""
 TRAFFIC_SIGN_DETECTION_RANGE = (900, 1400)
-"""min and max area of sign"""
+"""min and max area of street sign to be detected"""
 MAX_FRAME = 7000
 """maximum number of frames to run agent for"""
 FRAME_SKIP = 1
 """number of frames to skip before outputting one"""
 ROAD_SIGN_DETECTION_RANGE = (WIDTH / 4, WIDTH * 2 / 3)
-"""values for classifying road signs in left, middle or right"""
+"""position ranges for classifying road signs in left, middle or right"""
 ROAD_SIGN_DETECTION_AREA = (7000, 12000, 7500)
 """min areas of road signs for left, middle and right"""
 ROAD_DETECTION_AREA_RIGHT = 42000
@@ -64,13 +66,10 @@ SPEED_30_SIGN = cv2.imread("speed_signs/speed_30_sign.png", -1)
 SPEED_60_SIGN = cv2.imread("speed_signs/speed_60_sign.png", -1)
 SPEED_90_SIGN = cv2.imread("speed_signs/speed_90_sign.png", -1)
 
+# global variables
 screen = None
-
 current_speed = 0.0  # m/s
 prev_gnss_data = None
-steering = 0
-throttle = 0
-brake = 0
 traffic_light = None
 traffic_sign = None
 road_sign_case = None
@@ -229,7 +228,7 @@ def rgb_sensor(image):
 
     global detected_red_traffic_light, target_speed
 
-    render_barrier.wait() # wait for all other sensors to finish processing
+    render_barrier.wait()  # wait for all other sensors to finish processing
 
     image.convert(cc.Raw)
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
@@ -344,6 +343,39 @@ def rgb_sensor(image):
 
     render_barrier.reset()
     tick_event.set()
+
+
+def segmentation_sensor(image):
+    """Detects the road contour for steering and detects traffic signs and lights if enabled.
+
+    Writes the current road contour into `road_countour`, as well as the current traffic sign and light into
+    `traffic_sign` and `traffic_light` respectively.
+
+    Args:
+        image (carla.Image): The image data from the semantic segmentation sensor.
+    """
+    global traffic_light, traffic_sign, road_contour, road_sign_case, current_cooldown
+
+    # now = time.time()
+
+    image.convert(cc.CityScapesPalette)
+    array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
+    array = np.reshape(array, (image.height, image.width, 4))
+    array = array[:, :, :3]
+    array = array[:, :, ::-1]
+
+    # run all 4 functions concurrently as they don't depend on each other
+    functions = [_road_sign_contour, _road_contour, _traffic_light_contour, _traffic_sign_contour]
+    threads = []
+    for function in functions:
+        thread = threading.Thread(target=function, args=(array,))
+        threads.append(thread)
+        thread.start()
+
+    for thread in threads:
+        thread.join()
+
+    render_barrier.wait()
 
 
 def _road_sign_contour(image):
@@ -559,39 +591,6 @@ def _traffic_sign_contour(image):
         traffic_sign = None
 
 
-def segmentation_sensor(image):
-    """Detects the road contour for steering and detects traffic signs and lights if enabled.
-
-    Writes the current road contour into `road_countour`, as well as the current traffic sign and light into
-    `traffic_sign` and `traffic_light` respectively.
-
-    Args:
-        image (carla.Image): The image data from the semantic segmentation sensor.
-    """
-    global traffic_light, traffic_sign, road_contour, road_sign_case, current_cooldown
-
-    # now = time.time()
-
-    image.convert(cc.CityScapesPalette)
-    array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
-    array = np.reshape(array, (image.height, image.width, 4))
-    array = array[:, :, :3]
-    array = array[:, :, ::-1]
-
-    # run all 4 functions concurrently as they dont depend on each other
-    functions = [_road_sign_contour, _road_contour, _traffic_light_contour, _traffic_sign_contour]
-    threads = []
-    for function in functions:
-        thread = threading.Thread(target=function, args=(array,))
-        threads.append(thread)
-        thread.start()
-
-    for thread in threads:
-        thread.join()
-
-    render_barrier.wait()
-
-
 def gnss_sensor(sensor_data):
     """Reads the current data from the gnss sensor and updates the `current_speed` of the vehicle.
 
@@ -678,7 +677,7 @@ def main(
         number_of_vehicles (int): Number of vehicles to spawn.
         number_of_walkers (int): Number of walkers to spawn.
     """
-    global waypoint, waypoint_deadzone, lidar, screen, brake, throttle, steering, frame, last_tick
+    global waypoint, waypoint_deadzone, lidar, screen, frame, last_tick
 
     load_model()
 
@@ -698,23 +697,16 @@ def main(
     try:
         client.set_timeout(10.0)
         world = client.load_world("Town02_Opt")
-        # world = client.get_world()
-        # world.unload_map_layer(carla.MapLayer.StreetLights)
-        # world.unload_map_layer(carla.MapLayer.Decals)
-        # world.unload_map_layer(carla.MapLayer.ParkedVehicles)
-        # world.unload_map_layer(carla.MapLayer.Foliage)
-        # world.unload_map_layer(carla.MapLayer.Walls)
-        # world.unload_map_layer(carla.MapLayer.Props)
 
         # Settings
         settings = world.get_settings()
         settings.synchronous_mode = True  # Enables synchronous mode
-        settings.fixed_delta_seconds = 0.05
+        settings.fixed_delta_seconds = 1 / WORLD_TICK_RATE
         world.apply_settings(settings)
 
         blueprint_library = world.get_blueprint_library()
 
-        spawn_point = carla.Transform(carla.Location(191.76, 253.54, 1.0), carla.Rotation(yaw=90.0))
+        spawn_point = carla.Transform(carla.Location(191.76, 253.54, 1.0), carla.Rotation(yaw=-90.0))
         vehicle_bp = blueprint_library.find("vehicle.tesla.model3")
         vehicle = world.spawn_actor(vehicle_bp, spawn_point)
         print("Spawned vehicle")
@@ -730,7 +722,7 @@ def main(
         rgb_bp.set_attribute("image_size_x", f"{WIDTH}")
         rgb_bp.set_attribute("image_size_y", f"{HEIGHT}")
         rgb_bp.set_attribute("fov", "60")
-        rgb_bp.set_attribute("sensor_tick", "0.02")
+        rgb_bp.set_attribute("sensor_tick", f"{1/WORLD_TICK_RATE}")
         relative_transform = carla.Transform(carla.Location(x=-0.62, y=0, z=1.7), carla.Rotation())
         rgb = world.spawn_actor(rgb_bp, relative_transform, vehicle)
         rgb.listen(rgb_sensor)
@@ -745,7 +737,7 @@ def main(
         segmentation_bp.set_attribute("image_size_x", f"{WIDTH}")
         segmentation_bp.set_attribute("image_size_y", f"{HEIGHT}")
         segmentation_bp.set_attribute("fov", "60")
-        segmentation_bp.set_attribute("sensor_tick", "0.02")
+        segmentation_bp.set_attribute("sensor_tick", f"{1/WORLD_TICK_RATE}")
         segmentation = world.spawn_actor(segmentation_bp, relative_transform, vehicle)
         segmentation.listen(segmentation_sensor)
 
@@ -760,16 +752,16 @@ def main(
         lidar_bp.set_attribute("upper_fov", "20.0")
         lidar_bp.set_attribute("lower_fov", "-20.0")
         lidar_bp.set_attribute("channels", "256.0")
-        lidar_bp.set_attribute("range", str(LIDAR_DISTANCE))
+        lidar_bp.set_attribute("range", f"{LIDAR_DISTANCE}")
         lidar_bp.set_attribute("points_per_second", "1000000.0")
-        lidar_bp.set_attribute("rotation_frequency", "20")
+        lidar_bp.set_attribute("rotation_frequency", f"{WORLD_TICK_RATE}")
         lidar = world.spawn_actor(lidar_bp, lidar_transform, vehicle)
         lidar.listen(lidar_sensor)
 
         world.tick()
 
         while frame < MAX_FRAME:
-            tick_event.wait() # wait for rgb_sensor to finish
+            tick_event.wait()  # wait for rgb_sensor to finish
 
             throttle, steering, brake = vehicle_control()
             control = carla.VehicleControl(

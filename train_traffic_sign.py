@@ -14,7 +14,7 @@ import tensorflow as tf
 maxX = 96
 maxY = 96
 
-trainDatagen = ImageDataGenerator(
+train_datagen = ImageDataGenerator(
     rotation_range=30,
     rescale=1.0 / 255,
     width_shift_range=0.2,
@@ -25,7 +25,7 @@ trainDatagen = ImageDataGenerator(
     brightness_range=[0.95, 1.1],
 )
 
-trainGenerator = trainDatagen.flow_from_directory(
+train_generator = train_datagen.flow_from_directory(
     directory="../Schildererkennung/Train",
     target_size=(maxX, maxY),
     color_mode="rgb",
@@ -35,7 +35,7 @@ trainGenerator = trainDatagen.flow_from_directory(
     subset="training",
 )
 
-validationGenerator = trainDatagen.flow_from_directory(
+validation_generator = train_datagen.flow_from_directory(
     directory="../Schildererkennung/Train",
     target_size=(maxX, maxY),
     color_mode="rgb",
@@ -73,17 +73,17 @@ def get_model():
 
 # %%
 try:
-    # model = keras.models.load_model('traffic_sign.h5')
-    print("loaded model")
-    raise OSError()
+    model = keras.models.load_model("traffic_sign.h5")
+    print("loaded pretrained model")
 except OSError:
+    print("didn't find pretrained model, training")
     model, callbacks = get_model()
-    history = model.fit(trainGenerator, epochs=8, callbacks=callbacks, validation_data=validationGenerator)
+    history = model.fit(train_generator, epochs=8, callbacks=callbacks, validation_data=validation_generator)
 
-testDatagen = ImageDataGenerator(rescale=1.0 / 255)
-testDatagen = testDatagen.flow_from_directory(
+test_datagen = ImageDataGenerator(rescale=1.0 / 255)
+test_generator = test_datagen.flow_from_directory(
     directory="../Schildererkennung/Test2", target_size=(maxX, maxY), color_mode="rgb", batch_size=64, shuffle=False
 )
 
 
-print(model.evaluate(testDatagen))
+print(model.evaluate(test_generator))
