@@ -50,7 +50,7 @@ FRAME_SKIP = 1
 """number of frames to skip before outputting one"""
 ROAD_SIGN_DETECTION_RANGE = (WIDTH / 4, WIDTH * 2 / 3)
 """position ranges for classifying road signs in left, middle or right"""
-ROAD_SIGN_DETECTION_AREA = (7000, 12000, 7500)
+ROAD_SIGN_DETECTION_AREA = (7000, 11000, 7500)
 """min areas of road signs for left, middle and right"""
 ROAD_DETECTION_AREA_RIGHT = 42000
 """minium area of road to be classified as an right turn, instead of a left turn"""
@@ -76,6 +76,9 @@ road_sign_case = None
 road_contour = None
 detected_red_traffic_light = False
 target_speed = 30  # km/h
+steering = 0
+throttle = 0
+brake = 0
 frame = 0
 current_cooldown = 0
 obstacles: List[Tuple[float, float, np.ndarray]] = []
@@ -677,7 +680,7 @@ def main(
         number_of_vehicles (int): Number of vehicles to spawn.
         number_of_walkers (int): Number of walkers to spawn.
     """
-    global waypoint, waypoint_deadzone, lidar, screen, frame, last_tick
+    global waypoint, waypoint_deadzone, lidar, screen, frame, last_tick, steering, throttle, brake
 
     load_model()
 
@@ -706,7 +709,7 @@ def main(
 
         blueprint_library = world.get_blueprint_library()
 
-        spawn_point = carla.Transform(carla.Location(191.76, 253.54, 1.0), carla.Rotation(yaw=-90.0))
+        spawn_point = carla.Transform(carla.Location(191.76, 273.54, 1.0), carla.Rotation(yaw=90.0))
         vehicle_bp = blueprint_library.find("vehicle.tesla.model3")
         vehicle = world.spawn_actor(vehicle_bp, spawn_point)
         print("Spawned vehicle")
@@ -722,7 +725,7 @@ def main(
         rgb_bp.set_attribute("image_size_x", f"{WIDTH}")
         rgb_bp.set_attribute("image_size_y", f"{HEIGHT}")
         rgb_bp.set_attribute("fov", "60")
-        rgb_bp.set_attribute("sensor_tick", f"{1/WORLD_TICK_RATE}")
+        rgb_bp.set_attribute("sensor_tick", "0.02")
         relative_transform = carla.Transform(carla.Location(x=-0.62, y=0, z=1.7), carla.Rotation())
         rgb = world.spawn_actor(rgb_bp, relative_transform, vehicle)
         rgb.listen(rgb_sensor)
@@ -737,7 +740,7 @@ def main(
         segmentation_bp.set_attribute("image_size_x", f"{WIDTH}")
         segmentation_bp.set_attribute("image_size_y", f"{HEIGHT}")
         segmentation_bp.set_attribute("fov", "60")
-        segmentation_bp.set_attribute("sensor_tick", f"{1/WORLD_TICK_RATE}")
+        segmentation_bp.set_attribute("sensor_tick", "0.02")
         segmentation = world.spawn_actor(segmentation_bp, relative_transform, vehicle)
         segmentation.listen(segmentation_sensor)
 
@@ -821,7 +824,7 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("host", nargs="?", default="127.0.0.1", help="IP of the host server")
+    parser.add_argument("host", nargs="?", default="127.0.0.1", help="IP of the host server, default \"127.0.0.1\"")
     parser.add_argument("--no-collision-detection", dest="collision_detection", action="store_false", help="Disable collision detection")
     parser.add_argument("--no-sign-detection", dest="sign_detection", action="store_false", help="Disable traffic sign detection")
     parser.add_argument("--no-light-detection", dest="light_detection", action="store_false", help="Disable traffic lights detection")
@@ -831,8 +834,8 @@ if __name__ == "__main__":
     parser.add_argument("--output-to-file", dest="write_to_file", action="store_true", help="Enable writing of output image to file")
     parser.add_argument("--third-person", dest="third_person", action="store_true", help="Enable displaying of 3rd person camera")
     parser.add_argument("--no-display", dest="display_image", action="store_false", help="Disable displaying of image on screen")
-    parser.add_argument("--number-of-vehicles", default=40, type=int, help="Number of vehicles")
-    parser.add_argument("--number-of-walkers", default=30, type=int, help="Number of walkers")
+    parser.add_argument("--number-of-vehicles", default=40, type=int, help="Number of vehicles, default 40")
+    parser.add_argument("--number-of-walkers", default=30, type=int, help="Number of walkers, default 30")
 
     args = parser.parse_args()
 
