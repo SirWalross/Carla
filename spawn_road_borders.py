@@ -1,3 +1,7 @@
+# Henry Thomas, Lennard Kloock
+# Vertiefung Simulation WS21/22
+# 07-03-2022
+
 import carla
 
 
